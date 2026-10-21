@@ -80,6 +80,9 @@ struct PaletteParams {
     int histogramBins = 16;              ///< por canal; 8 no modo rápido
     double colorPenalty = 0.05;          ///< nota = log(erro + 1) + (K − 2)·penalidade — a calibrar
     std::optional<int> forcedNumColors;  ///< ignora a seleção automática
+    double edgeScale = 0.1;              ///< peso do pixel = 1 / (1 + borda/edgeScale), borda = gradiente em [0, ~2] — a calibrar
+    double exactColorMinShare = 0.002;   ///< cor exata só conta se tem ≥ essa fração dos pixels (imagem chapada) — a calibrar
+    int refineRounds = 2;                ///< rodadas de k-means sobre os pixels, só para o K escolhido
 
     Fingerprint fingerprint(Fingerprint upstream) const;
 };

@@ -84,7 +84,7 @@ cnx-praia/
 │     ├─ engine/      CoreEngine.h  Parameters.h  Fingerprint.h  TaskContext.h  [ParameterFiler]
 │     ├─ preprocess/  [Preprocessor.h  SignalImage.h  EdgeImage.h  FlowField.h  AADetector.h]
 │     ├─ classify/    [ImageFeatures.h  DecisionTree.h  ImageClassification.h]
-│     ├─ palette/     [ColorHistogram.h  KMeans.h  PaletteFinder.h  WeightsFinder.h]
+│     ├─ palette/     ColorHistogram.h  KMeans.h  PaletteFinder.h  WeightsFinder.h
 │     ├─ segment/     PixelMap.h  QuadTree.h  PixelSegmenter.h  SubPixelSegmenter.h
 │     │               [SuperPixelSegmenter.h  CoOccurrenceMatrix.h  BipartiteMatcher.h
 │     │                SegmentationTrainer.h]
@@ -104,7 +104,7 @@ cnx-praia/
 │  │                  pixel_segmenter_test, vector_image_test, boundary_tracer_test,
 │  │                  generative_model_test, energy_terms_test, optimizer_test, crossing_guard_test,
 │  │                  contour_smoother_test, bezier_curve_test, bezier_fitter_test,
-│  │                  sub_pixel_segmenter_test
+│  │                  sub_pixel_segmenter_test, palette_test, weights_finder_test
 │  └─ golden/         imagens + SVG de referência (regressão)
 ├─ bench/             (Google Benchmark: k-means, segmentação, CG, ajuste Bézier)
 └─ third_party/       ann/  dxflib/
@@ -555,6 +555,41 @@ O passo de Schur coincide com a solução do sistema denso (k+m)×(k+m) (testado
 **Teste de mutação** (17 defeitos injetados um por vez, em Release):
 - **Detectados na primeira rodada (15).** Micro-regiões do maior para o menor; vizinha mais distante; pixel da praia no lado oposto; praia sem o teste de espessura, da reta A–B, da fração de contorno ou do contraste; sombra sem o teste de suavidade ou de variância; reconstrução pela imagem bruta (o teste com ruído); mínimo de pixels inclusivo (a região de exatamente 4 px); `splitDisconnected` ficando com a última componente; micro-regiões acima do tamanho da vez; paleta sem checar o índice; `reassignPixel` sem o caso "já pertence" e sem o contato do destino.
 - **Escaparam e agora são detectados (2).** Regiões sem índice de paleta (−1) que se fundiriam entre si (o pipeline nunca chega a esse estado; um teste de estágio o cobre) e a cor da vizinha que deve prevalecer em `enforceMinNumPixels` quando a união escolhe a raiz da região pequena (empate de tamanho com o menor id; também é um teste de estágio).
+
+### 1.16 `PaletteFinder` e `WeightsFinder`: decisões de implementação
+
+**Pipeline da paleta** (`include/cnx/palette/`):
+1. **Pesos de pixel.** w = 1/(1 + borda/`edgeScale`), com a borda dada pelo gradiente de Sobel nos 4 canais (RGBA em [0, 1]) dividido por 4, de modo que um degrau de amplitude a em um canal dá a (um degrau preto|branco em RGB dá √3). É o `EdgeImage` da §3, que ainda não existe como módulo à parte. Os pixels de transição pesam menos, para o antialiasing não criar cores falsas.
+2. **Histograma esparso** (`ColorHistogram`), 16 faixas por canal (8 no modo rápido): só as células ocupadas existem. Cada célula guarda o peso, a **média ponderada** das cores que caíram nela e o espalhamento interno Σ w‖c − média‖². Assim o erro de um agrupamento medido nas células é **exatamente** o erro nos pixels (testado: 1e-9), e o k-means tem custo independente de N (o coreset da §0, item 11).
+3. **K = minColors..maxColors.** Sementes (`chooseSeeds`): os picos do histograma, pulando os que ficam a menos de 2 faixas de uma semente já escolhida; as que faltarem saem de k-means++ (amostragem D² ponderada pelo peso, com `myPrng` semeado por seed ⊕ K). Depois, Lloyd ponderado com no máximo `kmeansMaxRounds` (10) rodadas e distância em RGBA. Centros que ficam vazios são descartados.
+4. **Nota** = log(erro + 1) + (cores − 2)·`colorPenalty`, com o erro quadrático médio por unidade de peso (RGBA em [0, 1]), e "cores" = centros não vazios. Fica a menor nota (empate → menos cores). A normalização por peso é uma escolha minha: com o erro total, a nota dependeria do tamanho da imagem.
+5. **Imagem chapada** (`findOptimalNumColors`, parte das cores exatas): as cores exatas com ≥ `exactColorMinShare` (0,2 %) dos pixels, se forem ≤ `maxColors` e cobrirem ≥ 99 % da imagem, são a paleta, sem k-means (`exact = true`). Pixels de antialiasing, cada cor com poucos pixels, não contam. `forcedNumColors` desliga essa detecção.
+6. **Refinamento.** Para o K escolhido, `refineRounds` (2) rodadas de k-means sobre os pixels reais (item 11 da §0). O erro final é medido nos pixels.
+
+**Não implementado:** a segunda árvore de decisão de 62 medidas (2 a 9 cores ou modo "livre") não está definida na especificação. A escolha de K é só a menor nota. Os limiares `edgeScale`, `exactColorMinShare` e `colorPenalty` são provisórios (a calibrar).
+
+**`myPrng`** (`sla/Prng.h`): SplitMix64, conferido contra os três primeiros valores de referência da semente 0 (0xE220A8397B1DCDAF, 0x6E789E6AA1B965F4, 0x06C45D188009454F). `uniform()` com 53 bits e `below(n)` sem viés (rejeição de Lemire).
+
+**`WeightsFinder`** (decomposição de um pixel em mistura das cores da paleta):
+
+> w = argmin ‖Σ wᵢ cᵢ − p‖²  sujeito a  wᵢ ≥ 0, Σ wᵢ = 1
+
+- **Duas cores:** projeção na reta com t ∈ [0, 1] (forma fechada).
+- **Três ou mais:** conjuntos ativos, como Lawson–Hanson. Começa no vértice mais próximo; entra a variável de gradiente mais negativo; resolve o sistema KKT [CᵀC 1; 1ᵀ 0][z; ν] = [Cᵀp; 1] no suporte; se algum z sai ≤ 0, anda de w até z e para na primeira restrição, removendo o peso zerado. Uma cor afinamente dependente das do suporte (KKT singular) é banida.
+- **Por que não o Cholesky da especificação.** Com 4 canais, CᵀC tem posto ≤ 4 e é singular para n ≥ 5. O KKT continua não singular enquanto as cores do suporte são afinamente independentes, e o ótimo sempre tem suporte de no máximo 5 cores (Carathéodory em ℝ⁴). É o item 12 da §0.
+- **Candidatas.** Com mais de `maxCandidates` (9) cores na paleta, só as mais próximas do pixel entram.
+- **Unicidade.** Com n ≤ 5 cores afinamente independentes, os pesos de uma mistura exata são únicos; com mais cores há várias misturas exatas (dependência afim), e o que se garante é o resíduo mínimo.
+
+**Testes** (`palette_test` 17, `weights_finder_test` 6):
+- `myPrng` contra a referência; histograma contra força bruta (média e espalhamento de 600 cores em 256 faixas); a identidade erro do coreset = erro dos pixels; sementes por pico com supressão e k-means++; centros na média ponderada do grupo; descarte de centros vazios; o refinamento sobre os pixels (rampa).
+- Paleta: o gradiente de Sobel de um degrau (√3) e os pesos; 4 cores com ruído → K = 4 com a nota mínima ali e a fórmula conferida em cada K; imagem chapada (inclusive com 3 pixels de uma cor rara); K forçado; a banda de transição (com os pesos de borda K = 2, sem eles K = 3); o disco com antialiasing → 2 cores; determinismo e validação.
+- Pesos: duas cores (projeção, saturação, cores iguais); mistura exata com 3 a 9 cores; **o resíduo contra a enumeração exaustiva de todos os suportes de até 5 cores** (125 casos, muitos fora do fecho convexo); suporte ≤ 5; paleta colinear; candidatas e subconjuntos.
+- Desempenho: imagem 512×512 com ruído, 4 cores, ≈ 110 ms (Release).
+
+**Teste de mutação** (22 defeitos injetados um por vez, em Release):
+- **Detectados na primeira rodada (19).** Histograma: espalhamento sem a média, chave sem o alfa, média dividida pelo nº de pixels, ordem das células invertida. K-means: sementes sem supressão, erro sem o espalhamento, centros vazios mantidos, centros fora de ordem. Paleta: nota com o nº de cores errado, chapada com cobertura frouxa, peso de borda sem a escala, Sobel com o peso errado, K forçado que continua buscando. Pesos: projeção de duas cores sem o corte, KKT sem a restrição de soma, entrada da variável de maior gradiente, pesos negativos aceitos, candidatas mais distantes, índice repetido. `myPrng` com 52 bits.
+- **Escaparam e agora são detectados (2).** Os centros que nunca se movem para a média do grupo, e o refinamento sobre os pixels que não atualiza os centros. O primeiro agora tem um teste com valor analítico (o item de 0,3 e peso 4 move o centro de A para 1,2/14). O segundo, uma rampa vermelha 0..199 em que o k-means das células deixa os centros a 2 níveis do ótimo dos pixels (47,5 e 147,5) e o refinamento os leva a 49,0 e 149,0 (ótimo: 49,5 e 149,5).
+- **Escapa (1), por ser inalcançável.** *Cor dependente não banida (W10):* o ramo em que o sistema KKT é singular só roda se uma cor afinamente dependente do suporte tiver gradiente estritamente menor que λ. No ótimo de um suporte, uma cor dependente tem gradiente igual a λ (empate) ou, se o suporte tem 5 cores, o resíduo é nulo e todos os gradientes são zero. Só o arredondamento poderia chegar lá. O ramo fica como proteção contra laço infinito.
 
 ---
 

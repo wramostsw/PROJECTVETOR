@@ -16,6 +16,10 @@ add_library(cnx_core
   src/segment/QuadTree.cpp
   src/segment/PixelSegmenter.cpp
   src/segment/SubPixelSegmenter.cpp
+  src/palette/ColorHistogram.cpp
+  src/palette/KMeans.cpp
+  src/palette/PaletteFinder.cpp
+  src/palette/WeightsFinder.cpp
   src/vector/VectorImage.cpp
   src/vector/BoundaryTracer.cpp
   src/vector/GenerativeModel.cpp
@@ -31,7 +35,7 @@ enable_testing()
 foreach(test_name header_smoke_test pixel_map_test pixel_segmenter_test vector_image_test boundary_tracer_test
                  generative_model_test energy_terms_test optimizer_test crossing_guard_test
                  contour_smoother_test bezier_curve_test bezier_fitter_test
-                 sub_pixel_segmenter_test)
+                 sub_pixel_segmenter_test palette_test weights_finder_test)
   add_executable(${test_name} tests/unit/${test_name}.cpp)
   target_link_libraries(${test_name} PRIVATE cnx_core)
   add_test(NAME ${test_name} COMMAND ${test_name})
