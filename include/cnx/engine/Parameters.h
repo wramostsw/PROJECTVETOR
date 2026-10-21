@@ -142,6 +142,7 @@ struct FitParams {
     int maxRounds = 20;
     int initialFragmentNodes = 4;  ///< — a calibrar
     int newtonMaxIterations = 10;
+    int finalSweeps = 8;           ///< varreduras extras no limiar final, até nenhuma fusão/deslocamento restar
     bool enforceG1 = true;         ///< tangente compartilhada nas quebras que não são cantos/junções
 
     Fingerprint fingerprint(Fingerprint upstream) const;

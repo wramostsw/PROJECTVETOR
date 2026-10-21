@@ -40,6 +40,8 @@ struct Registrar {
 };
 
 inline int runAll() {
+    // Sem buffer: se um teste travar ou abortar, as linhas já impressas não se perdem.
+    std::setvbuf(stdout, nullptr, _IONBF, 0);
 #if defined(_MSC_VER) && defined(_DEBUG)
     // Asserções da CRT/STL vão para stderr em vez de abrir uma caixa de diálogo (execução não interativa).
     _CrtSetReportMode(_CRT_ASSERT, _CRTDBG_MODE_FILE);

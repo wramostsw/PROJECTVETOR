@@ -90,19 +90,20 @@ cnx-praia/
 │     │                SegmentationTrainer.h]
 │     ├─ vector/      VectorImage.h  BoundaryTracer.h  GenerativeModel.h  ContourSmoother.h
 │     │               Optimizer.h  EnergyTerms.h  CrossingGuard.h   (a grade de segmentos mora em CrossingGuard)
-│     ├─ fit/         [BezierFitter.h]
+│     ├─ fit/         BezierFitter.h
 │     └─ export/      Exporter.h  [SvgWriter.h  EpsWriter.h  AiWriter.h
 │                      CompatiblePdfWriter.h  DxfWriter.h]
 ├─ src/               (espelha include/; hoje: segment/PixelMap.cpp, QuadTree.cpp, PixelSegmenter.cpp,
 │                      vector/VectorImage.cpp, BoundaryTracer.cpp, GenerativeModel.cpp, EnergyTerms.cpp,
-│                      Optimizer.cpp, CrossingGuard.cpp, ContourSmoother.cpp)
+│                      Optimizer.cpp, CrossingGuard.cpp, ContourSmoother.cpp; fit/BezierFitter.cpp;
+│                      sla/BezierCurve.cpp)
 ├─ qt/                EngineController.{h,cpp}  QImageLoader.{h,cpp}
 ├─ tests/
 │  ├─ math/           validate_math.py   (validação numérica das fórmulas)
 │  ├─ unit/           test_harness.h, test_support.h, header_smoke_test, pixel_map_test,
 │  │                  pixel_segmenter_test, vector_image_test, boundary_tracer_test,
 │  │                  generative_model_test, energy_terms_test, optimizer_test, crossing_guard_test,
-│  │                  contour_smoother_test
+│  │                  contour_smoother_test, bezier_curve_test, bezier_fitter_test
 │  └─ golden/         imagens + SVG de referência (regressão)
 ├─ bench/             (Google Benchmark: k-means, segmentação, CG, ajuste Bézier)
 └─ third_party/       ann/  dxflib/
@@ -472,6 +473,59 @@ Todos os gradientes são analíticos e conferidos contra diferenças finitas cen
   - *PR sem o corte em zero (O1):* equivalente em efeito. Um β negativo exige g'·g > ‖g'‖², o que já dispara o reinício de Powell (|g'·g| ≥ 0,2‖g'‖²) antes de β ser usado. O corte fica por ser a definição padrão do PR+.
   - *Armijo sem o termo c₁ (O4):* só difere quando a queda de energia fica entre 0 e c₁·α·|g·d|. Nenhum teste produz esse caso, e os passos aceitos nos testes cumprem Armijo de qualquer modo. É uma lacuna real de cobertura, não verificada.
   - *Quarentena que nunca expira (S6):* só atrasa a convergência dentro da fase (os nós ficam congelados até o fim dela, quando a quarentena é limpa). Nenhum teste mede esse atraso.
+
+### 1.14 `BezierFitter`: decisões de implementação
+
+**Visão geral** (`include/cnx/fit/BezierFitter.h`). Cada aresta do `VectorImage` suavizado é ajustada uma vez e guarda suas curvas em `curves_`; as duas faces vizinhas as compartilham. `BezierFitter::run` substitui as curvas existentes; `fitChain` ajusta uma poligonal solta (usado pelos testes).
+
+**Quebras e fragmentos.**
+- Os nós com a flag `Corner`, `Junction` ou `Pinned` são quebras de tangente **livre**. Entre elas, cada trecho é cortado em fragmentos iniciais de `initialFragmentNodes` nós (no mínimo 4: fragmentos menores que isso virariam retas, e uma reta ao lado de uma cúbica quebra a continuidade G¹).
+- Todos os fragmentos iniciais têm ≥ 4 pontos, exceto um trecho que já nasça com ≤ 3. Fragmentos de ≤ 3 pontos são retas (`SegmentKind::Line`), com E calculada na projeção de cada nó interior sobre a corda.
+- **Aresta fechada.** O nó âncora (`LoopAnchor`) é uma quebra lisa: o primeiro e o último fragmento compartilham a tangente do âncora. Se o âncora tiver flag de canto ou junção, a ponta é livre.
+
+**Modelo de um fragmento** (`FragmentModel`). A curva é B(t; p) = B_fixo(t) + J(t)·p, linear em p. Cada ponta é livre (P₁ ou P₂ inteiro entra em p, 2 coordenadas) ou G¹ (uma incógnita α ou β, com P₁ = P₀ + α·τ₀ e P₂ = P₃ − β·τ₃, e a parte constante vai para B_fixo). Isso dá k = 4, 3, 3 ou 2 incógnitas e uma única implementação das derivadas:
+
+| Grandeza | Fórmula |
+|---|---|
+| E | ½ Σ_k ‖B(t_k) − Q_k‖² nos nós interiores |
+| g_p | Σ Jᵀ r |
+| g_t,k | r·B' |
+| H_pp | Σ JᵀJ |
+| h_k | Jᵀ B' + J'ᵀ r |
+| D_k | ‖B'‖² + r·B'' |
+
+O gradiente e a Hessiana em seta foram conferidos contra diferenças finitas centradas nos quatro modos de ponta (erro < 1e-6; a especificação numérica do §2.6 dá 1e-10 e 1e-8).
+
+**Newton com complemento de Schur.** Partindo de t por comprimento de corda e p por mínimos quadrados (equações normais k×k por Cholesky, com uma crista mínima se forem quase singulares):
+- S = H_pp + λI − Σ h h'ᵀ/(D_k + λ), S δp = −g_p + Σ h g_t/(D_k + λ), δt_k = −(g_t,k + h_kᵀ δp)/(D_k + λ);
+- D_k + λ é mantido ≥ 1e-9 (Hessiana indefinida);
+- λ ← λ/10 quando o passo é aceito (E diminui) e λ ← 10λ quando é rejeitado, até 14 tentativas;
+- t é projetado em [0, 1] e feito crescente. Custo O(m) por iteração, contra O(m³) do Newton denso.
+
+O passo de Schur coincide com a solução do sistema denso (k+m)×(k+m) (testado, erro < 1e-9). Um λ pequeno pode deixar S indefinido (o Cholesky falha e λ aumenta), o que o ajuste trata aumentando λ. Num arco ruidoso de 26 pontos, a energia cai de 0,288 (mínimos quadrados com t por corda) para 0,088 (Newton/Schur, 8 iterações).
+
+**G¹ degenerado.** Se, no fim, α ≤ 0 ou β ≤ 0 (laço ou cúspide), o fragmento usa a heurística de Schneider (α = β = ‖P₃ − P₀‖/3), os t são reotimizados para essa curva (Newton 1D por nó) e o fragmento fica marcado `degenerate`. A fusão recusa uniões degeneradas, então a subdivisão permanece.
+
+**Fusão e deslocamento** (por trecho, da esquerda para a direita):
+- Funde A e B se ΔE = E*(A∪B) − E*(A) − E*(B) < τ_r, com τ_r = τ₀ (τ_f/τ₀)^{r/(R−1)}, r = 0..R−1 (R = 20: fator ≈ 2,42 por rodada). O ajuste da união parte dos t de A e B reescalados pelos comprimentos de corda (*warm start*).
+- Se recusa, testa deslocar a quebra em ±1 nó e fica com a de menor E*(A) + E*(B). O deslocamento nunca deixa um fragmento com menos de min(4, tamanho original) pontos.
+- Depois das R rodadas, `finalSweeps` varreduras extras no limiar final (até nada mudar). A especificação para em R rodadas; as extras deixam o resultado num ponto fixo.
+- Como a fusão é gulosa, a energia final não é estritamente monótona no limiar. O teste do limiar usa folga de 20 % e exige que o número de curvas nunca aumente.
+
+**O que ΔE < τ significa.** E soma ½d² sobre os nós do fragmento, então τ_f = 0,2 deixa o erro total de uma curva chegar a 0,2 px²: num disco de raio 10,6 com ~50 nós, o resultado são 2 curvas com desvio radial de 0,16 px; com τ_f = 0,003, 4 curvas com 0,019 px. Perfis que queiram precisão de pixel devem usar limiares menores que os 0,2 do perfil AA. O valor é ajustável em `FitParams::statThreshFinal`.
+
+**`BezierCurve`.** Implementei os métodos que estavam só declarados: `secondDifferenceBound`, `flatteningSegments` (n = ⌈√(3M/(4·tol))⌉), `flatten`, `bounds` (raízes das quadráticas de B'_x e B'_y) e `length` (Gauss–Legendre de 5 pontos, adaptativo).
+
+**Testes** (`bezier_curve_test` 6, `bezier_fitter_test` 23):
+- Curva: bases e derivadas, divisão e inversão, caixa justa contra amostragem, comprimento contra polilinhas finas e o quarto de círculo, discretização dentro da tolerância.
+- Fitter: derivadas contra diferenças finitas, passo de Schur contra o denso, mínimos quadrados estacionário, recuperação de uma cúbica com t desconhecidos, Newton contra mínimos quadrados, G¹, cúspide, retas, *warm start*, cronograma de limiares, colineares → 1 curva, círculo (3 curvas, desvio 0,014 px, G¹ inclusive na âncora), quadrado com cantos (4 curvas), limiar contra número de curvas, deslocamentos, integração com o `VectorImage` (cadeias contínuas, cantos viram pontas, `validate()` e áreas de Green), disco suavizado, determinismo e cancelamento.
+
+**Teste de mutação** (22 defeitos injetados um por vez, em Release):
+- **Detectados na primeira rodada (17).** Limite de segmentos da discretização, raízes em y da caixa, peso de Gauss–Legendre, limite da curvatura; sinais do gradiente, de D, de h, do lado direito de Schur e de δt; coluna G¹ do fim e parte fixa G¹ do início; deslocamento que escolhe o pior; cantos que não quebram a cadeia; expoente do cronograma de limiares; sem G¹ nas quebras internas; Newton que nunca aceita o passo; λ sem nova tentativa; *warm start* sem reescala.
+- **Escaparam e agora são detectados (3).** Fusão por erro absoluto em vez de ΔE (o teste do ziguezague de 15 pontos, cuja união tem E = 0,17 > τ_f = 0,1 e mesmo assim funde); tangente errada na âncora (agora comparada com a diferença central); Schneider sem a marca `degenerate` (o caso do ziguezague com tangentes a favor do percurso, que é determinístico, tem de ser marcado).
+- **Escapam (2).** Não consegui construir um caso que os alcance, então são lacunas de cobertura reais:
+  - *Sem a monotonia de t (F7):* nenhum dado dos testes, nem uma polilinha que volta sobre si mesma, leva o Newton a ordenar os t de forma errada.
+  - *Fusão que aceita fragmento degenerado (F14):* a degeneração só ocorre com G¹ nas duas pontas, e nem a estrela serrilhada fechada produz uma união degenerada que o código original recuse.
 
 ---
 
