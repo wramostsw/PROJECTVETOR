@@ -88,18 +88,19 @@ cnx-praia/
 │     ├─ segment/     PixelMap.h  [QuadTree.h  PixelSegmenter.h  SuperPixelSegmenter.h
 │     │                SubPixelSegmenter.h  CoOccurrenceMatrix.h  BipartiteMatcher.h
 │     │                SegmentationTrainer.h]
-│     ├─ vector/      VectorImage.h  BoundaryTracer.h  [ContourSmoother.h  Optimizer.h
-│     │                EnergyTerms.h  GenerativeModel.h  CrossingGuard.h  SpatialIndex.h]
+│     ├─ vector/      VectorImage.h  BoundaryTracer.h  GenerativeModel.h
+│     │               [ContourSmoother.h  Optimizer.h  EnergyTerms.h  CrossingGuard.h  SpatialIndex.h]
 │     ├─ fit/         [BezierFitter.h]
 │     └─ export/      Exporter.h  [SvgWriter.h  EpsWriter.h  AiWriter.h
 │                      CompatiblePdfWriter.h  DxfWriter.h]
-├─ src/               (espelha include/; hoje: segment/PixelMap.cpp, vector/VectorImage.cpp,
-│                      vector/BoundaryTracer.cpp)
+├─ src/               (espelha include/; hoje: segment/PixelMap.cpp, QuadTree.cpp, PixelSegmenter.cpp,
+│                      vector/VectorImage.cpp, BoundaryTracer.cpp, GenerativeModel.cpp)
 ├─ qt/                EngineController.{h,cpp}  QImageLoader.{h,cpp}
 ├─ tests/
 │  ├─ math/           validate_math.py   (validação numérica das fórmulas)
 │  ├─ unit/           test_harness.h, test_support.h, header_smoke_test, pixel_map_test,
-│  │                  vector_image_test, boundary_tracer_test
+│  │                  pixel_segmenter_test, vector_image_test, boundary_tracer_test,
+│  │                  generative_model_test
 │  └─ golden/         imagens + SVG de referência (regressão)
 ├─ bench/             (Google Benchmark: k-means, segmentação, CG, ajuste Bézier)
 └─ third_party/       ann/  dxflib/
@@ -378,10 +379,45 @@ A simulação "e se" mede o erro quadrático em torno da cor mediana (SSE) e ace
 
 **Desempenho** (MSVC Release, 1 thread): logo 640×480 com ruído, 4,6 mil superpixels → 4 regiões, ≈ 0,4 s. Ruído por pixel 512×384, o pior caso para a QuadTree (196 mil superpixels), ≈ 2,4 s. Em Debug os tempos são cerca de 12× maiores.
 
-**Teste de mutação** (13 defeitos injetados um por vez, em Release):
+**Teste de mutação do PixelSegmenter** (13 defeitos injetados um por vez, em Release):
 - Detectados: trocar escolhendo a região mais distante; juntar sem a simulação "e se"; diagonal escolhendo o movimento mais caro; regiões minúsculas com desempate invertido e com a região mais distante; QuadTree com `<` no lugar de `≤` e com a metade direita encolhida; `unionMedian` com mediana superior; sela aceitando uma célula igual à diagonal; mediana pequena com posição superior.
 - Dois escaparam na primeira rodada: juntar e trocar sem marcar a cor em cache como suja. Acrescentei `colorCacheConsistent()` (autoverificação do cache) e o teste `color_cache_stays_consistent_through_every_stage`, que a chama depois de cada estágio. Os dois defeitos passaram a ser detectados.
 - `squaredDeviation` sem o aborto antecipado: mutante equivalente quanto ao resultado. O contrato é "devolve algo > limite", e o total exato também o cumpre; o aborto só muda o tempo de execução. Nenhum teste funcional poderia detectá-lo.
+
+### 1.12 `GenerativeModel`: decisões de implementação
+
+**Escopo.** O modelo trabalha sobre as **poligonais entre os nós** do `VectorImage`, que é a representação otimizada pelo `ContourSmoother`. As curvas de Bézier ajustadas depois (`BezierFitter`) não entram. As cores das faces são fixas; as variáveis são as posições dos nós. A cor de cada face é `Face::color`, e o exterior (face 0) vale 0. A mistura é linear nos 4 canais RGBA, no espaço em que o alvo e as cores foram dados. O alvo é a imagem original, sem desfoque (§0).
+
+**Cobertura exata por área (§2.2.2).**
+- Um único passe pelas arestas, com o vetor dc = c_esq − c_dir por aresta. A face à esquerda soma o trecho no sentido direto e a da direita soma o trecho invertido, que dá o sinal oposto.
+- Cada segmento é fatiado nas linhas inteiras da grade (DDA com duas progressões aritméticas intercaladas, sem ordenação) em "migalhas de pão". Cada migalha, com δy = (t_b − t_a)·Δy e x̄ no ponto médio, gera dois incrementos de acumulador: α = −δy·((i+1) − x̄) na coluna i e γ − α, com γ = −δy, na coluna i+1.
+- Os incrementos são ordenados por (linha, coluna) e fundidos. A soma prefixada da linha devolve ĉ_p.
+- **Bordas da imagem.** Partes com y fora de [0, H] ou x > W não afetam nenhum pixel e são descartadas. A parte com x < 0 cobre, na sua linha, tudo o que está à direita: soma γ na coluna 0. Isso vale para nós que a otimização leve para fora da moldura; é testado.
+- **Segmentos sobre linhas inteiras.** A atribuição da migalha ao pixel (por floor do ponto médio) é irrelevante para a área: um segmento vertical em x = m dá o mesmo resultado nos dois pixels vizinhos. Só o gradiente é descontínuo nesse conjunto de medida nula.
+- **Face exterior.** `faceCoverage(0)` devolve zeros. Os laços do exterior são a moldura invertida, e a soma de Green daria −1 em cada pixel.
+
+**Energia esparsa (§2.2.3).** Entre duas colunas com incremento a cor é constante. Os pixels cruzados são avaliados um a um; cada trecho entre eles custa O(1), a partir das somas prefixadas por linha de w·I (4 canais) e de w·‖I‖², calculadas uma vez na construção do modelo. Custo por avaliação: O(P log P) na ordenação dos incrementos, sem depender de W·H. Memória do modelo: ≈ 48 bytes por pixel. Linhas sem incrementos custam O(1). O erro de uma sequência é n‖c‖² − 2c·S¹ + S², cortado em 0 para absorver o arredondamento; nos testes a diferença para a energia densa fica abaixo de 1e-9 em termos relativos.
+
+**Gradiente analítico (§2.3).** Para cada migalha (pixel p, intervalo [t_a, t_b] do segmento k, com normal n_k = (Δy, −Δx)):
+- escala s = 2·w_p·dc·(ĉ_p − I_p), com o ĉ_p do grupo (linha, coluna), achado por busca binária;
+- nó inicial += s·n_k·∫(1−t)dt, nó final += s·n_k·∫t dt, com ∫(1−t) = (t_b − t_a) − ½(t_b² − t_a²) e ∫t = ½(t_b² − t_a²).
+
+Os nós de junção e os de arestas fechadas acumulam todas as arestas incidentes sem tratamento especial, porque o índice é o `NodeId`. No modo com gradiente, as migalhas de segmentos horizontais mantêm um incremento de valor zero: a cobertura não muda, mas o pixel precisa existir como grupo para o ĉ_p ser consultado, e a normal do segmento não é nula. O gradiente tem a forma `std::span<Vec2>` com um elemento por nó; mascarar nós fixados e em quarentena é responsabilidade do chamador.
+
+**Descontinuidade conhecida.** Um nó movido sobre a moldura direita ou inferior (x = W ou y = H) tem derivada lateral: a migalha cai fora de qualquer pixel e é descartada, o que corresponde à derivada pelo lado de fora. O CG com região de confiança de 0,5 px (§2.3) não depende desse ponto.
+
+**API.** `energy`, `energyAndGradient`, `render` e `faceCoverage` (densos, para diagnóstico e testes) e `denseEnergy` (definição, O(W·H), usada como referência). Todos os métodos são const e sem estado mutável. `GenerativeStats` devolve migalhas, incrementos e pixels cruzados da última avaliação.
+
+**Testes** (`generative_model_test`, 14 testes):
+- Cobertura contra recorte poligonal exato (Sutherland–Hodgman por pixel, soma assinada de laços e furos): erro < 1e-12 em 5 cenas com nós deslocados, cobertura em [0, 1] e soma 1 em cada pixel.
+- Escadinha sem deslocamento reproduz a cor de cada pixel; a imagem sintetizada é a mistura ponderada pelas coberturas.
+- Energia esparsa = densa (< 1e-9 relativo), com nós deslocados até 3 px, fora da imagem, e com pesos incluindo zeros.
+- Alvo = síntese: E ≈ 0 e gradiente ≈ 0.
+- Gradiente contra diferenças centradas (h = 1e-5): 568 derivadas em 6 cenas, mais cenas com pesos e nós distantes, e uma ilha com aresta fechada; desvio relativo < 1e-5. Há também um caso de forma fechada de um único segmento.
+- Segmentos fora da imagem: um retângulo cuja aresta esquerda é exatamente vertical em x = −2, e um que a atravessa, cobrem os pixels à direita.
+- Complexidade: numa imagem de 1000×800 com moldura e ilha, a avaliação esparsa usa ~2,5 mil migalhas e leva ≈ 1,4 ms, contra ≈ 15 ms da densa.
+
+**Teste de mutação** (15 defeitos injetados um por vez, em Release): pesos (1−t)/t trocados no gradiente; dc invertido; sem a parte à esquerda da imagem, ou com seu sinal trocado; α com a borda esquerda do pixel; normal com sinal trocado; varredura sem o trecho final da linha; incrementos repetidos sem somar; peso ignorado na energia e no gradiente; gradiente sem o fator 2; nó final com o peso do inicial; eventos nulos descartados no modo com gradiente; ĉ do pixel cruzado sem somar o incremento. Todos foram detectados. Um escapou na primeira rodada: ignorar um segmento exatamente vertical à esquerda da imagem, caso que o deslocamento aleatório dos nós nunca produz. O teste `edges_left_of_the_image_still_cover_the_pixels_to_their_right` passou a cobri-lo.
 
 ---
 
