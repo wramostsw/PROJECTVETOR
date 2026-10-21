@@ -82,8 +82,8 @@ cnx-praia/
 │  ├─ sla/            Vec.h  Array.h  BezierCurve.h  [linalg.h  Prng.h  Timers.h  Memory.h]
 │  └─ cnx/
 │     ├─ engine/      CoreEngine.h  Parameters.h  Fingerprint.h  TaskContext.h  [ParameterFiler]
-│     ├─ preprocess/  [Preprocessor.h  SignalImage.h  EdgeImage.h  FlowField.h  AADetector.h]
-│     ├─ classify/    [ImageFeatures.h  DecisionTree.h  ImageClassification.h]
+│     ├─ preprocess/  Preprocessor.h  [SignalImage.h  EdgeImage.h  FlowField.h  AADetector.h]
+│     ├─ classify/    Classifier.h  [ImageFeatures.h  DecisionTree.h]
 │     ├─ palette/     ColorHistogram.h  KMeans.h  PaletteFinder.h  WeightsFinder.h
 │     ├─ segment/     PixelMap.h  QuadTree.h  PixelSegmenter.h  SubPixelSegmenter.h
 │     │               [SuperPixelSegmenter.h  CoOccurrenceMatrix.h  BipartiteMatcher.h
@@ -96,7 +96,9 @@ cnx-praia/
 ├─ src/               (espelha include/; hoje: segment/PixelMap.cpp, QuadTree.cpp, PixelSegmenter.cpp,
 │                      vector/VectorImage.cpp, BoundaryTracer.cpp, GenerativeModel.cpp, EnergyTerms.cpp,
 │                      Optimizer.cpp, CrossingGuard.cpp, ContourSmoother.cpp; fit/BezierFitter.cpp;
-│                      sla/BezierCurve.cpp)
+│                      sla/BezierCurve.cpp; palette/*.cpp; segment/SubPixelSegmenter.cpp;
+│                      engine/CoreEngine.cpp, Parameters.cpp; preprocess/Preprocessor.cpp;
+│                      classify/Classifier.cpp; export/ExporterSettings.cpp)
 ├─ qt/                EngineController.{h,cpp}  QImageLoader.{h,cpp}
 ├─ tests/
 │  ├─ math/           validate_math.py   (validação numérica das fórmulas)
@@ -104,7 +106,8 @@ cnx-praia/
 │  │                  pixel_segmenter_test, vector_image_test, boundary_tracer_test,
 │  │                  generative_model_test, energy_terms_test, optimizer_test, crossing_guard_test,
 │  │                  contour_smoother_test, bezier_curve_test, bezier_fitter_test,
-│  │                  sub_pixel_segmenter_test, palette_test, weights_finder_test
+│  │                  sub_pixel_segmenter_test, palette_test, weights_finder_test,
+│  │                  parameters_test, preprocess_classify_test, core_engine_test
 │  └─ golden/         imagens + SVG de referência (regressão)
 ├─ bench/             (Google Benchmark: k-means, segmentação, CG, ajuste Bézier)
 └─ third_party/       ann/  dxflib/
@@ -591,6 +594,48 @@ O passo de Schur coincide com a solução do sistema denso (k+m)×(k+m) (testado
 - **Escaparam e agora são detectados (2).** Os centros que nunca se movem para a média do grupo, e o refinamento sobre os pixels que não atualiza os centros. O primeiro agora tem um teste com valor analítico (o item de 0,3 e peso 4 move o centro de A para 1,2/14). O segundo, uma rampa vermelha 0..199 em que o k-means das células deixa os centros a 2 níveis do ótimo dos pixels (47,5 e 147,5) e o refinamento os leva a 49,0 e 149,0 (ótimo: 49,5 e 149,5).
 - **Escapa (1), por ser inalcançável.** *Cor dependente não banida (W10):* o ramo em que o sistema KKT é singular só roda se uma cor afinamente dependente do suporte tiver gradiente estritamente menor que λ. No ótimo de um suporte, uma cor dependente tem gradiente igual a λ (empate) ou, se o suporte tem 5 cores, o resíduo é nulo e todos os gradientes são zero. Só o arredondamento poderia chegar lá. O ramo fica como proteção contra laço infinito.
 
+### 1.17 `CoreEngine`: orquestrador do pipeline
+
+**Responsabilidade.** Liga os módulos da §1.3 numa cadeia de sete estágios (`LoadImage → Classify → Palette → Segment → SmoothContours → FitBezier → Output`), decide **o que precisa ser refeito** pelas impressões digitais, publica o resultado como um `PipelineSnapshot` imutável e permite cancelar e acompanhar o progresso.
+
+**Execução.** `start(alvo)` cancela e aguarda a execução anterior, copia a configuração sob mutex (`RunConfig`: parâmetros, entrada, pedidos de exportação, observador, snapshot anterior) e roda `runPipeline` numa `std::jthread`. A thread só **lê** a cópia; a GUI pode chamar `setParameters`, `snapshot()` e `firstDirtyStage()` durante a execução. Para cada estágio até o alvo:
+
+1. calcula `fp_k` (a impressão encadeada da §1.3) com os parâmetros **efetivos**;
+2. se o estágio não está sujo acima dele (`dirty` ainda falso), o artefato existe no snapshot anterior e `fp_k` coincide, ele é **reaproveitado** (o mesmo `shared_ptr`; o observador recebe `onStageFinished(…, reaproveitado = true)`);
+3. senão, é recalculado e `dirty` passa a valer para os de baixo;
+4. no fim, estágios **depois do alvo** com `dirty` verdadeiro têm artefato e impressão descartados (estariam obsoletos); sem `dirty` ficam como estavam.
+
+O snapshot só é publicado se a execução termina (`Completed`). `Cancelled` e `Failed` deixam o último snapshot completo intacto. Exceções do observador são engolidas (o contrato as proíbe; um observador defeituoso não derruba o motor).
+
+**Perfil e parâmetros efetivos.** `Classify` escolhe um `ImageProfile`; a partir dele `EngineParameters::applyProfile` fixa o tipo de medição do suavizador e `fit.statThreshFinal`, e os estágios de `Palette` em diante usam esses parâmetros. A impressão do `Classify` usa os parâmetros brutos (o perfil ainda não existe). As tabelas por perfil e as dos controles de usuário (`applyUserControl`, escala multiplicativa `multiplicativeScale`, fator em [¼, 4] com 50 = identidade) são **provisórias**: a especificação dá a faixa e não a tabela (§0.1).
+
+**Estágios.**
+- *LoadImage*: `IImageLoader` (o adaptador Qt fica fora do núcleo). Impressão = caminho + tamanho + data do arquivo + `revision` (`invalidateInput()` a incrementa para forçar a releitura).
+- *Classify*: `preprocess` (alfa constante → opaco; redução por **média exata de área** quando passa de `targetAreaPx`, ampliação bilinear só com `allowUpscale`; cópia gaussiana `smooth` para paleta e segmentação, e `image` sem desfoque para o `GenerativeModel`) e `classify`.
+- *Palette*: `PaletteFinder` (§1.16).
+- *Segment*: paleta exata → componentes 4-conexas por cor mais próxima, varreduras de diagonais e fusão de regiões pequenas; senão `PixelSegmenter` e, nos perfis com AA, `SubPixelSegmenter` (§1.15). A faixa de progresso é dividida 70/30 nesse caso.
+- *SmoothContours*: `BoundaryTracer` + `ContourSmoother`, com o `GenerativeModel` só se alguma fase usa medição gerativa.
+- *FitBezier*: copia o `VectorImage` suavizado (a poligonal fica intacta), roda o `BezierFitter` e recalcula as áreas das faces pela fórmula de Green das cúbicas.
+- *Output*: ponto de extensão `IOutputStage`. O `Exporter` e os escritores (SVG/EPS/AI/PDF/DXF) ainda não existem; o estágio só chama o plugin quando há pedidos de exportação. Sua impressão cobre arquivo, formato, `ExporterSettings` (inclusive a `BackgroundSelection` com desfazer/refazer) e a do estágio anterior.
+
+**Edição manual da segmentação.** `replaceSegmentation(mapa, hashDasEdições)` exige um snapshot que já passou pela paleta e um `PixelMap` compacto. A impressão do `Segment` passa a ser `H(hash das edições, fp da paleta)`, uma pseudo-parametrização: vale enquanto a paleta for a mesma, e `setInput` a descarta. Mudar a paleta recalcula a segmentação.
+
+**Desvios da especificação (por escolha minha).**
+- **Uma thread orquestradora**, não uma por estágio: os estágios são sequenciais por dependência de dados, e o paralelismo útil está **dentro** deles (§1.6). `workerThreads` fica reservado.
+- O cancelamento é cooperativo (`std::stop_token` + `CancelTaskException` nos pontos de verificação dos `TaskContext`), com a mesma latência de checagem dos módulos.
+- O **classificador é um substituto declarado** das duas árvores de decisão (20 e 62 medidas) que a especificação cita sem defini-las: três regras sobre cores significativas, parcela de pixels em cores chapadas e formato com perda (JPEG → foto; chapada ≥ 99 % → `LogoMed`; chapada entre 80 e 99 % → `LogoMedAA`; abaixo disso, `PhotoMed`). Os limiares são provisórios.
+
+**Testes** (`parameters_test`, `preprocess_classify_test`, `core_engine_test`):
+- *Parâmetros:* sensibilidade de cada campo de cada struct à impressão (um campo esquecido reaproveitaria cache indevido); canonicalização de −0,0, NaN e separação de strings; tabela dos nove perfis; multiplicatividade e saturação dos controles; `BackgroundSelection` (desfazer/refazer, descarte do ramo, equivalência de impressão).
+- *Pré-processamento e classificador:* média de área exata (blocos 2×2, razão não inteira, conservação da massa); gaussiana (normalização, simetria, bordas replicadas); alfa, área-alvo, ampliação; validação e cancelamento; as três regras do classificador e o perfil forçado.
+- *Motor:* execução completa e progresso monótono dentro da faixa de cada estágio; alterar só o ajuste refaz só do `FitBezier` para baixo (identidade dos `shared_ptr`); cada grupo de parâmetros suja exatamente o seu estágio; execução sem nada sujo; alvo parcial; cancelamento (no carregador, entre estágios, dentro do suavizador, e sem estragar o cache); `start` cancelando a execução anterior; falhas; exceções do observador; disco com AA → `LogoMedAA` e área do disco a 0,2 % do círculo; perfil forçado; edição manual; estágio de saída; leitores concorrentes.
+- Resultados: 19 alvos de CTest, Debug e Release, sem avisos do MSVC /W4.
+
+**Teste de mutação** (48 defeitos injetados um por vez, em Release):
+- **Detectados na primeira rodada (32).** Motor: cache que ignora a impressão digital; estágio refeito que não suja os de baixo; ausência da invalidação depois do alvo; edição manual válida com outra paleta; revisão e caminho fora da impressão da entrada; saída sem as configurações; classificação sem os parâmetros do classificador; suavizador sem o modelo gerador; estágio em cache informado como refeito; `start` que não cancela a execução anterior (detectado por *timeout*); perfil ignorado nos estágios seguintes; AA sem `SubPixelSegmenter`; `firstDirtyStage` que ignora diferenças; `needsToBezierFit` fora por um; saída rodando sem pedidos. Pré-processamento: pesos de área sem normalizar, escala sempre 1, ampliação sem permissão, gaussiana sem normalizar, cópia suave que não é desfocada, alfa constante não achatado. Classificador: limiar de logo chapado frouxo, extensão sensível a maiúsculas, perfil forçado marcado como automático, formato com perda ignorado. `BackgroundSelection`: ramo de refazer não descartado, passo registrado ao ocultar o já oculto, visibilidade invertida. Parâmetros: tabela de perfil alterada, sensibilidade invertida, fotos com mola nas três fases, campos (`allowUpscale`, `energyTolerance`, `enforceG1`) fora da impressão, impressões sem encadear o estágio anterior, espessura fora da impressão de exportação.
+- **Escaparam e agora são detectados (13).** Saída sem o formato na impressão (teste: mudar só o formato); curvas sem recalcular as áreas (compara com `updateFaceAreas()` de novo); ausência do teste de cancelamento entre estágios (cancelar ao fim do ajuste não pode chegar ao plugin de saída, que não tem pontos de verificação); `setInput` mantendo a edição manual (reaplicar o mesmo caminho a descarta); `needsToSegment` fora por um; gaussiana com borda circular (rampa), raio curto (a 3 px do impulso), ampliação bilinear sem o meio pixel (2 → 4 colunas dá 0, 25, 75, 100); limiares do classificador (70 % chapado → foto) e limite de cores (exatamente `maxColors` ainda é logo, uma a mais é foto); impressão do fundo sem o conjunto (mesmo tamanho, faces diferentes); limpar o que já está vazio; limiar final sem o piso do inicial.
+- **Equivalentes (2).** *Segmentação sem o perfil na impressão (C4)* e *paleta sem a semente (C11)*: o perfil e a semente já entram na impressão do `Classify`, que está encadeada em todas as de baixo; remover o termo duplicado não muda nenhuma decisão. Os termos ficam como cinto e suspensório (o perfil também decide o modo de segmentação).
+- **Escapa (1).** *Paleta exata que para no primeiro passo (C21):* só difere quando uma varredura de diagonais cria outra quina diagonal, o que exigiria uma imagem construída para isso. O limite `finalSweepCap` protege contra laço infinito.
 ---
 
 ## 2. Formulação matemática

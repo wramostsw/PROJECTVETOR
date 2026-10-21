@@ -108,6 +108,7 @@ PaletteResult PaletteFinder::find(const sla::Array2D<sla::Rgba8>& image, const s
             result.fractions.push_back(static_cast<double>(count) / static_cast<double>(covered));
         }
         result.exact = true;
+        result.palette.exact = true;
         result.chosenK = static_cast<int>(significant.size());
         return result;
     }

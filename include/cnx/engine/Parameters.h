@@ -62,6 +62,7 @@ struct PreprocessParams {
     double targetAreaPx = 1.0e6;  ///< área-alvo do redimensionamento (px²) — a calibrar
     double blurSigmaPx = 0.0;     ///< σ do desfoque gaussiano (paleta/segmentação); 0 desativa
     bool flattenAlpha = true;     ///< ensureFlattened quando o alfa é constante
+    bool allowUpscale = false;    ///< também amplia imagens menores que a área-alvo (por padrão só reduz)
 
     Fingerprint fingerprint(Fingerprint upstream) const;
 };

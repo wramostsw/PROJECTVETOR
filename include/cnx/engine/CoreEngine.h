@@ -96,9 +96,19 @@ struct PipelineSnapshot {
     std::array<Fingerprint, kStageCount> fingerprints{};
 };
 
+/// Estágio de saída plugável (Save/VectorRender/Thumbs). Chamado só quando há ExportRequests e a
+/// impressão digital do estágio Output mudou. O snapshot passado tem todos os artefatos até FitBezier.
+/// Deve respeitar `ctx` (cancelamento) e lançar std::exception em falha.
+class IOutputStage {
+public:
+    virtual ~IOutputStage() = default;
+    virtual void write(const PipelineSnapshot& snapshot, const std::vector<ExportRequest>& requests, TaskContext& ctx) = 0;
+};
+
 class CoreEngine {
 public:
-    /// workerThreads = 0: std::thread::hardware_concurrency().
+    /// workerThreads = 0: std::thread::hardware_concurrency(). Reservado: hoje os estágios rodam numa thread
+    /// só (um orquestrador, sem paralelismo de dados ainda).
     explicit CoreEngine(std::shared_ptr<IImageLoader> loader, unsigned workerThreads = 0);
     /// Solicita cancelamento e aguarda o término.
     ~CoreEngine();
@@ -113,6 +123,10 @@ public:
     void setParameters(const EngineParameters& params);
     EngineParameters parameters() const;
     void setExportRequests(std::vector<ExportRequest> requests);
+    void setOutputStage(std::shared_ptr<IOutputStage> output);
+    /// Força o recarregamento do arquivo na próxima execução (ex.: o arquivo mudou no disco sem mudar
+    /// de tamanho nem de data). A impressão digital do arquivo já usa caminho, tamanho e data de modificação.
+    void invalidateInput();
 
     // ---------------------------------------------------------------- recálculo inteligente
     /// Primeiro estágio cuja impressão digital mudou; nullopt = tudo em dia.
@@ -125,9 +139,11 @@ public:
     /// curso, ela é cancelada e aguardada antes.
     void start(Stage target = Stage::Output);
     void cancel() noexcept;
-    /// Bloqueia até o fim da execução corrente (ou retorna o status da última).
+    /// Bloqueia até o fim da execução corrente (ou retorna o status da última). `onRunFinished` já foi chamado.
     RunStatus wait();
     bool isRunning() const noexcept;
+    /// Mensagem da última execução (vazia se concluída; o erro se falhou).
+    std::string lastMessage() const;
 
     /// Último snapshot completo publicado; seguro de ler durante outra execução.
     std::shared_ptr<const PipelineSnapshot> snapshot() const;

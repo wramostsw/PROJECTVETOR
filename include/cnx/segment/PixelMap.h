@@ -26,6 +26,7 @@ inline constexpr RegionId kNoRegion = -1;
 struct Palette {
     std::vector<sla::Rgba> colors;
     double score = 0.0;  ///< log(erro + 1) + (K − 2)·penalidade
+    bool exact = false;  ///< imagem chapada: as cores são as cores exatas da imagem (modo "paleta exata" da segmentação)
 };
 
 namespace RegionFlag {
