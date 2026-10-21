@@ -17,12 +17,17 @@ add_library(cnx_core
   src/segment/PixelSegmenter.cpp
   src/vector/VectorImage.cpp
   src/vector/BoundaryTracer.cpp
-  src/vector/GenerativeModel.cpp)
+  src/vector/GenerativeModel.cpp
+  src/vector/EnergyTerms.cpp
+  src/vector/Optimizer.cpp
+  src/vector/CrossingGuard.cpp
+  src/vector/ContourSmoother.cpp)
 target_include_directories(cnx_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 
 enable_testing()
 foreach(test_name header_smoke_test pixel_map_test pixel_segmenter_test vector_image_test boundary_tracer_test
-                 generative_model_test)
+                 generative_model_test energy_terms_test optimizer_test crossing_guard_test
+                 contour_smoother_test)
   add_executable(${test_name} tests/unit/${test_name}.cpp)
   target_link_libraries(${test_name} PRIVATE cnx_core)
   add_test(NAME ${test_name} COMMAND ${test_name})

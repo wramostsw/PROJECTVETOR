@@ -27,8 +27,7 @@ using sla::Vec2;
 
 namespace {
 
-double uniform(SplitMix64& rng) { return static_cast<double>(rng.next() >> 11) * (1.0 / 9007199254740992.0); }
-double symmetric(SplitMix64& rng, double amplitude) { return (2.0 * uniform(rng) - 1.0) * amplitude; }
+double uniform(SplitMix64& rng) { return cnxtest::uniform01(rng); }
 
 /// Cena: imagem aleatória segmentada em blocos fundidos ao acaso e traçada em um VectorImage.
 struct TracedScene {
@@ -46,13 +45,7 @@ TracedScene tracedScene(int w, int h, int block, int merges, SplitMix64& rng, in
     return {std::move(t.image), std::move(s.image), std::move(t.pixelFaces)};
 }
 
-/// Desloca nós por jitter uniforme; `keepFrame` preserva os nós sobre a moldura.
-void jitterNodes(VectorImage& v, double amplitude, bool keepFrame, SplitMix64& rng) {
-    for (NodeId n = 0; n < static_cast<NodeId>(v.nodeCount()); ++n) {
-        if (keepFrame && (v.flags(n) & (cnx::NodeFlag::ImageBorder | cnx::NodeFlag::Pinned)) != 0) continue;
-        v.setPosition(n, v.position(n) + Vec2{symmetric(rng, amplitude), symmetric(rng, amplitude)});
-    }
-}
+using cnxtest::jitterNodes;
 
 // ---------------------------------------------------------------- referência: recorte poligonal exato
 

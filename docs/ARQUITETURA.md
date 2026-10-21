@@ -88,19 +88,21 @@ cnx-praia/
 │     ├─ segment/     PixelMap.h  [QuadTree.h  PixelSegmenter.h  SuperPixelSegmenter.h
 │     │                SubPixelSegmenter.h  CoOccurrenceMatrix.h  BipartiteMatcher.h
 │     │                SegmentationTrainer.h]
-│     ├─ vector/      VectorImage.h  BoundaryTracer.h  GenerativeModel.h
-│     │               [ContourSmoother.h  Optimizer.h  EnergyTerms.h  CrossingGuard.h  SpatialIndex.h]
+│     ├─ vector/      VectorImage.h  BoundaryTracer.h  GenerativeModel.h  ContourSmoother.h
+│     │               Optimizer.h  EnergyTerms.h  CrossingGuard.h   (a grade de segmentos mora em CrossingGuard)
 │     ├─ fit/         [BezierFitter.h]
 │     └─ export/      Exporter.h  [SvgWriter.h  EpsWriter.h  AiWriter.h
 │                      CompatiblePdfWriter.h  DxfWriter.h]
 ├─ src/               (espelha include/; hoje: segment/PixelMap.cpp, QuadTree.cpp, PixelSegmenter.cpp,
-│                      vector/VectorImage.cpp, BoundaryTracer.cpp, GenerativeModel.cpp)
+│                      vector/VectorImage.cpp, BoundaryTracer.cpp, GenerativeModel.cpp, EnergyTerms.cpp,
+│                      Optimizer.cpp, CrossingGuard.cpp, ContourSmoother.cpp)
 ├─ qt/                EngineController.{h,cpp}  QImageLoader.{h,cpp}
 ├─ tests/
 │  ├─ math/           validate_math.py   (validação numérica das fórmulas)
 │  ├─ unit/           test_harness.h, test_support.h, header_smoke_test, pixel_map_test,
 │  │                  pixel_segmenter_test, vector_image_test, boundary_tracer_test,
-│  │                  generative_model_test
+│  │                  generative_model_test, energy_terms_test, optimizer_test, crossing_guard_test,
+│  │                  contour_smoother_test
 │  └─ golden/         imagens + SVG de referência (regressão)
 ├─ bench/             (Google Benchmark: k-means, segmentação, CG, ajuste Bézier)
 └─ third_party/       ann/  dxflib/
@@ -418,6 +420,58 @@ Os nós de junção e os de arestas fechadas acumulam todas as arestas incidente
 - Complexidade: numa imagem de 1000×800 com moldura e ilha, a avaliação esparsa usa ~2,5 mil migalhas e leva ≈ 1,4 ms, contra ≈ 15 ms da densa.
 
 **Teste de mutação** (15 defeitos injetados um por vez, em Release): pesos (1−t)/t trocados no gradiente; dc invertido; sem a parte à esquerda da imagem, ou com seu sinal trocado; α com a borda esquerda do pixel; normal com sinal trocado; varredura sem o trecho final da linha; incrementos repetidos sem somar; peso ignorado na energia e no gradiente; gradiente sem o fator 2; nó final com o peso do inicial; eventos nulos descartados no modo com gradiente; ĉ do pixel cruzado sem somar o incremento. Todos foram detectados. Um escapou na primeira rodada: ignorar um segmento exatamente vertical à esquerda da imagem, caso que o deslocamento aleatório dos nós nunca produz. O teste `edges_left_of_the_image_still_cover_the_pixels_to_their_right` passou a cobri-lo.
+
+### 1.13 `ContourSmoother`: termos, CG e fiscal
+
+**Energia por fase** (`EnergyTerms.h`; os pesos de cada fase vêm de `phaseWeights`):
+
+E = λ_fid · (mola | E_gen | nada) + λ_ang · E_ang + λ_sp^(φ) · E_sp + λ_air · E_air + λ_brd · E_brd
+
+| Termo | Definição | Observações |
+|---|---|---|
+| Fidelidade | mola Σ max(0, ‖P−O‖ − r)², ou E_gen do `GenerativeModel`, ou nenhuma (`measurement_types[φ]`) | λ_fid = `fidelityWeight` (novo, padrão 1, a calibrar) |
+| Angular | Σ θ², θ = atan2(u×v, u·v), nos nós **interiores** das arestas e nos de arestas fechadas | nas junções a cadeia termina, então não há ângulo; a flag `Corner` desliga o termo no nó |
+| Espaçamento | Σ (‖Δ_k‖ − ‖Δ_{k−1}‖)² | pesos 5,0 → 0,5 → 0,5 |
+| Pressão do ar | (A − A₀)² por contorno com < 8 nós | A₀ = área na escadinha original; contorno = laço de uma face (externo ou furo); o exterior não tem |
+| Âncora de margem | (coordenada − moldura)² nos nós da moldura não fixos | ver a trava exata, abaixo |
+
+Todos os gradientes são analíticos e conferidos contra diferenças finitas centradas (`energy_terms_test`), inclusive com cantos perfurados e arestas fechadas. O gradiente do prior angular segue a tabela do §2.4. Três observações sobre a energia vieram da execução:
+
+1. **Trava exata da moldura.** Só a mola de margem não basta: com ela os nós da moldura derivam alguns milésimos para dentro, a moldura deixa de medir W×H e a invariante I4 (Σ áreas = W·H) falha. Por isso, além da mola, o gradiente perpendicular dos nós da moldura é zerado e a coordenada perpendicular é fixada exatamente no início da fase. Eles deslizam ao longo da moldura e nunca saem dela (`borderHardConstraint`, ligado por padrão). A mola de margem continua na energia e vale zero nesse regime.
+2. **O espaçamento é necessário, não só estético.** Sem ele, nós livres sobre um trecho reto deslizam e se amontoam. O prior angular depende de 1/‖Δ‖², fica rígido demais perto da coincidência, e a busca em linha falha. Num teste, dois nós chegaram a 1e-6 px um do outro. O fiscal trata esse colapso como um cruzamento (ver abaixo).
+3. **O prior angular não desloca polígonos com poucos nós.** Em qualquer polígono convexo Σ θ = 2π, então um retângulo (4 giros iguais) já é o mínimo de Σ θ². A perfuração de cantos só faz diferença quando há curvas ou lados em ângulos diferentes; é por isso que o teste usa um triângulo com hipotenusa em escada.
+
+**Otimizador** (`Optimizer.h`): gradiente conjugado não linear **Polak–Ribière+** (β = max(0, g'·(g'−g)/‖g‖²)) com reinício de Powell (|g'·g| ≥ 0,2‖g'‖²) e reinício em d = −g se d não for de descida. A busca em linha é a de Nocedal & Wright (alg. 3.5 e 3.6) com **Wolfe forte** (c₁ = 1e-4, c₂ = 0,1), interpolação cúbica protegida e bisseção de reserva. A **região de confiança** limita o deslocamento de cada nó a `maxNodeStepPx` (0,5) por iteração; no teto basta a condição de Armijo. Funções indefinidas fora de um domínio (NaN) são tratadas como "passo grande demais". O passo inicial é 1/‖g‖ na primeira iteração e, depois, α_prev·(g·d)_anterior/(g·d) (N&W 3.60).
+
+**Fiscal anti-cruzamento** (`CrossingGuard.h`): interseção própria entre segmentos sem nó em comum, com uma **grade uniforme de segmentos** no lugar da kd-tree da ANN (que indexa pontos, não segmentos). O resultado é idêntico ao da força bruta O(S²), verificado em cenas perturbadas com dezenas de cruzamentos. Cada par é testado uma só vez, na célula do canto inferior-esquerdo da interseção das caixas. O fiscal também detecta **segmentos colapsados** (< `minSegmentPx`, 0,05 px).
+
+**Fluxo de uma fase.** Constrói a topologia estática, perfura os cantos (só na fase `punctureOnPhase`), cria o objetivo sobre os nós livres e itera. Depois de cada iteração aceita pelo CG, o fiscal confere o resultado. Havendo cruzamento ou colapso: desfaz a iteração, põe os nós envolvidos em quarentena por `quarantineRounds` iterações e recomeça o CG do ponto anterior (a energia continua não crescente). Quando a quarentena expira, o conjunto de nós livres muda e o CG recomeça de novo. Ao fim da fase a quarentena é limpa. Entradas que já se cruzam ou já têm segmentos colapsados são recusadas (`std::invalid_argument`).
+
+**Canto perfurado (`isProbablyPuncturedNode`).** O vetor de 21 medidas da especificação não está definido, então implementei uma regra de duas medidas que usa exatamente os dois conceitos citados ("ângulo local e retidão dos trechos adjacentes"). Cada braço segue a poligonal por até `punctureArmPx` (4 px) de comprimento de arco. O nó é canto se |giro entre as cordas dos braços| ≥ `punctureCornerThresh` (0,8 rad) e **nenhum nó intermediário** de cada braço se afasta da corda em mais de `punctureFlatnessThresh` (0,3 px). Limiar ≤ 0 desativa. A regra deve ser recalibrada no conjunto de referência.
+
+**Resultados medidos** (MSVC Release):
+- Disco de raio 10,6 com antialiasing (supersampling 16×16), fidelidade generativa: o erro radial médio dos nós cai de 0,425 px na escadinha para 0,015 px, e E_gen de 14,7 para 0,004 (≈ 90 ms).
+- Reta inclinada: o desvio máximo dos nós interiores cai de 0,657 px para 0,001 px.
+- Ângulo reto de um triângulo (generativo): o nó fica a 0,085 px do vértice verdadeiro com a perfuração e a 0,861 px sem ela.
+- Pressão do ar: numa região em L (6 nós), a área fica em 180,00 com a pressão e vai a 182,75 sem ela.
+- Duas barras escuras com alvo de barra única: o fiscal desfez 1 iteração por fase e o resultado não tem cruzamentos.
+
+**Limitações conhecidas.** Todos os pesos são provisórios (a calibrar): com a mola padrão (λ_fid = 1) um triângulo encolhe vários pixels sob o prior angular de 10, e os testes que dependem disso fixam os pesos explicitamente. O CG pode terminar por `LineSearchFailed` perto do arredondamento (gradiente ≈ 1e-3), o que é reportado em `PhaseStats::status`. O prior de suavidade "raiz quadrada" não foi implementado (`priorType` ≠ 3 lança `std::invalid_argument`).
+
+**Testes** (`energy_terms_test` 10, `optimizer_test` 9, `crossing_guard_test` 7, `contour_smoother_test` 9):
+- Termos em forma fechada, topologia contra contagem independente, gradientes contra diferenças finitas (cada termo e o total, com as três medições).
+- Detector de cantos em poligonais: L, reta, extremo de cadeia, arco, zigue-zague e quadrado fechado.
+- Otimizador: quadrática mal condicionada, Rosenbrock (32 iterações), Wolfe forte e Armijo em cada passo aceito, β ≥ 0, região de confiança por nó, domínio com NaN, falha da busca em linha, determinismo.
+- Fiscal: casos construídos e grade = força bruta em 12 cenas perturbadas.
+- Suavizador: precisão subpixel, topologia (`validate()`), nós fixos imóveis, moldura exata, quarentena que não vaza, determinismo, cancelamento e validação de argumentos.
+
+**Teste de mutação** (24 defeitos injetados um por vez, em Release):
+- **Detectados (21).** Sinais e fatores dos gradientes (angular, espaçamento, pressão do ar, âncora); zona livre da mola ignorada; flag `Corner` ignorada; vizinho errado na aresta fechada; limite de nós da pressão do ar; PR sem reinício de Powell; Wolfe fraco; região de confiança ignorada; interseção testada de um lado só; grade sem a célula dona do par; segmento curto invertido; iteração com cruzamento não desfeita; colapso não checado; trava da moldura removida; perfuração na fase errada; espaçamento sempre da fase 0.
+- **Dois escaparam na primeira rodada e agora são detectados:** o canto que ignora o braço da frente (acrescentei o zigue-zague visto do outro lado) e os nós do cruzamento fora da quarentena (sem ela o CG repete o mesmo passo inválido até esgotar as iterações; o teste das barras exige menos de 10 rejeições).
+- **Três escapam e não os considero falhas dos testes:**
+  - *PR sem o corte em zero (O1):* equivalente em efeito. Um β negativo exige g'·g > ‖g'‖², o que já dispara o reinício de Powell (|g'·g| ≥ 0,2‖g'‖²) antes de β ser usado. O corte fica por ser a definição padrão do PR+.
+  - *Armijo sem o termo c₁ (O4):* só difere quando a queda de energia fica entre 0 e c₁·α·|g·d|. Nenhum teste produz esse caso, e os passos aceitos nos testes cumprem Armijo de qualquer modo. É uma lacuna real de cobertura, não verificada.
+  - *Quarentena que nunca expira (S6):* só atrasa a convergência dentro da fase (os nós ficam congelados até o fim dela, quando a quarentena é limpa). Nenhum teste mede esse atraso.
 
 ---
 

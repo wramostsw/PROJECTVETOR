@@ -106,18 +106,32 @@ struct SmoothParams {
     std::array<MeasurementType, kPhases> measurementTypes{MeasurementType::Spring, MeasurementType::Spring,
                                                           MeasurementType::Spring};
     std::array<double, kPhases> spacingWeight{5.0, 0.5, 0.5};
-    int priorType = 3;                    ///< 3 = suavidade angular; o prior "raiz quadrada" fica desativado
+    double fidelityWeight = 1.0;          ///< λ_fid: peso da mola (ou do modelo gerador) frente aos priors — a calibrar
+    int priorType = 3;                    ///< 3 = suavidade angular (único implementado; o "raiz quadrada" fica desativado)
     double priorStrength = 10.0;          ///< prior_strengths
     double airPressureWeight = 5.0;       ///< air_pressure_weight
     int airPressureMaxNodes = 8;          ///< aplica-se a contornos com menos de 8 nós
-    double borderAnchorWeight = 10.0;     ///< — a calibrar
+    double borderAnchorWeight = 10.0;     ///< peso da mola de margem — a calibrar
+    /// Além da mola, trava exatamente a coordenada perpendicular dos nós da moldura: eles deslizam
+    /// ao longo dela e nunca saem. Sem isso a moldura deriva e a soma das áreas deixa de ser W·H (I4).
+    bool borderHardConstraint = true;
     double fidelityFreeRadiusPx = 0.0;    ///< raio da zona livre da mola; 0 = mola simples
     int quarantineRounds = 2;
-    double punctureCornerThresh = 0.0;    ///< puncture_corner_thresh — a calibrar
-    double punctureFlatnessThresh = 0.0;  ///< puncture_flatness_thresh — a calibrar
+    /// Segmentos mais curtos que isto são tratados como colapso (nós coincidentes): a iteração é
+    /// desfeita e os nós vão para a quarentena, como num cruzamento.
+    double minSegmentPx = 0.05;
+    /// Canto perfurado: um nó é canto se o giro entre os braços de comprimento `punctureArmPx` for
+    /// ≥ `punctureCornerThresh` (rad) e os dois braços forem retos, isto é, nenhum nó intermediário
+    /// se afasta da corda em mais de `punctureFlatnessThresh` (px). Limiar ≤ 0 desativa. A regra
+    /// substitui o vetor de 21 medidas da especificação, que não está definido — a calibrar.
+    double punctureCornerThresh = 0.8;    ///< puncture_corner_thresh (rad)
+    double punctureFlatnessThresh = 0.3;  ///< puncture_flatness_thresh (px)
+    double punctureArmPx = 4.0;
     int punctureOnPhase = 1;              ///< índice 0-based: só na fase do meio
     int maxCgIterations = 200;            ///< por fase
     double maxNodeStepPx = 0.5;           ///< região de confiança da busca em linha (§2.3)
+    double gradientTolerance = 1.0e-5;    ///< norma do infinito do gradiente nos nós livres
+    double energyTolerance = 1.0e-10;     ///< decréscimo relativo de energia por iteração
 
     Fingerprint fingerprint(Fingerprint upstream) const;
 };

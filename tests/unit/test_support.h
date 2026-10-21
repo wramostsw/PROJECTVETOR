@@ -7,7 +7,12 @@
 #include <cstdint>
 #include <vector>
 
+#include <cmath>
+#include <utility>
+
 #include "cnx/segment/PixelMap.h"
+#include "cnx/vector/BoundaryTracer.h"
+#include "cnx/vector/VectorImage.h"
 #include "sla/Array.h"
 #include "sla/Vec.h"
 
@@ -95,6 +100,79 @@ inline MoveStats randomMoves(cnx::PixelMap& map, const sla::Array2D<sla::Rgba8>&
         (moved ? stats.accepted : stats.refused) += 1;
     }
     return stats;
+}
+
+// ---------------------------------------------------------------- cenas vetoriais
+
+inline double uniform01(SplitMix64& rng) { return static_cast<double>(rng.next() >> 11) * (1.0 / 9007199254740992.0); }
+inline double symmetric(SplitMix64& rng, double amplitude) { return (2.0 * uniform01(rng) - 1.0) * amplitude; }
+
+/// VectorImage traçado a partir de blocos aleatórios fundidos ao acaso.
+struct VectorScene {
+    cnx::VectorImage image;
+    sla::Array2D<sla::Rgba8> source;
+    sla::Array2D<cnx::FaceId> pixelFaces;
+};
+
+inline VectorScene vectorScene(int w, int h, int block, int merges, SplitMix64& rng, int levels = 4) {
+    Scene s = blockScene(w, h, block, rng, levels);
+    randomMerges(s.map, merges, rng);
+    s.map.assignMedianColors();
+    (void)s.map.compact();
+    cnx::TraceResult t = cnx::BoundaryTracer().trace(s.map);
+    return {std::move(t.image), std::move(s.image), std::move(t.pixelFaces)};
+}
+
+/// Desloca nós por jitter uniforme em [−amplitude, amplitude]²; `keepFrame` preserva os nós da moldura.
+inline void jitterNodes(cnx::VectorImage& v, double amplitude, bool keepFrame, SplitMix64& rng) {
+    for (cnx::NodeId n = 0; n < static_cast<cnx::NodeId>(v.nodeCount()); ++n) {
+        if (keepFrame && (v.flags(n) & (cnx::NodeFlag::ImageBorder | cnx::NodeFlag::Pinned)) != 0) continue;
+        v.setPosition(n, v.position(n) + sla::Vec2{symmetric(rng, amplitude), symmetric(rng, amplitude)});
+    }
+}
+
+/// Cena de duas regiões (fundo claro e figura escura) cuja fronteira verdadeira é dada por
+/// `inside(x, y)` em coordenadas contínuas. O alvo tem antialiasing exato por superamostragem
+/// ss×ss; a segmentação binária usa cobertura ≥ 0,5. O VectorImage é a escadinha dessa
+/// segmentação, com as cores verdadeiras (branco e preto) nas faces.
+struct AaScene {
+    cnx::VectorImage image;
+    sla::Array2D<sla::Rgba> target;
+    sla::Array2D<double> coverage;
+};
+
+template <class InsideFn>
+AaScene aaScene(int w, int h, InsideFn&& inside, int ss) {
+    AaScene s{cnx::VectorImage(), sla::Array2D<sla::Rgba>(w, h), sla::Array2D<double>(w, h)};
+    cnx::PixelMap map(w, h);
+    const cnx::RegionId bg = map.createRegion();
+    const cnx::RegionId fg = map.createRegion();
+    for (int y = 0; y < h; ++y) {
+        for (int x = 0; x < w; ++x) {
+            int hits = 0;
+            for (int j = 0; j < ss; ++j) {
+                for (int i = 0; i < ss; ++i) {
+                    hits += inside(x + (i + 0.5) / ss, y + (j + 0.5) / ss) ? 1 : 0;
+                }
+            }
+            const double c = static_cast<double>(hits) / (ss * ss);
+            s.coverage(x, y) = c;
+            const float v = static_cast<float>(1.0 - c);
+            s.target(x, y) = {v, v, v, 1.0f};
+            const bool dark = c >= 0.5;
+            map.setLabel(x, y, dark ? fg : bg, dark ? sla::Rgba8{0, 0, 0, 255} : sla::Rgba8{255, 255, 255, 255});
+        }
+    }
+    map.assignMedianColors();
+    (void)map.compact();
+    cnx::TraceResult t = cnx::BoundaryTracer().trace(map);
+    s.image = std::move(t.image);
+    for (cnx::FaceId f = 1; f < static_cast<cnx::FaceId>(s.image.faceCount()); ++f) {
+        const sla::Rgba c = s.image.face(f).color;
+        // Cores verdadeiras exatas (a mediana já é 0 ou 1; isto só garante o canal alfa = 1).
+        s.image.face(f).color = c.r < 0.5f ? sla::Rgba{0, 0, 0, 1} : sla::Rgba{1, 1, 1, 1};
+    }
+    return s;
 }
 
 }  // namespace cnxtest
