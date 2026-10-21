@@ -1,0 +1,16 @@
+# Saídas de build
+build/
+build-*/
+cmake-build-*/
+out/
+*.obj
+*.o
+*.exe
+*.pdb
+*.ilk
+
+# Configuração local de ferramentas
+.claude/
+.vs/
+.vscode/
+*.user
