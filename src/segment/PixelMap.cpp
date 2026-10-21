@@ -446,7 +446,12 @@ bool PixelMap::tryMovePixel(int x, int y, RegionId to, sla::Rgba8 color) {
     }
     if (!touchesTarget) throw std::invalid_argument("PixelMap::tryMovePixel: destino não é 4-vizinho do pixel");
     if (!isSimplePoint(x, y)) return false;
+    moveUnchecked(x, y, from, target, color, around);
+    return true;
+}
 
+void PixelMap::moveUnchecked(int x, int y, RegionId from, RegionId target, sla::Rgba8 color,
+                             const std::array<RegionId, 4>& around) {
     // Contatos: cada 4-vizinho q (região Q) deixa de tocar `from` por p e passa a tocar `target`.
     for (const RegionId q : around) {
         if (q == kNoRegion) continue;
@@ -464,6 +469,22 @@ bool PixelMap::tryMovePixel(int x, int y, RegionId to, sla::Rgba8 color) {
     ++forest_.size_[ux(target)];
     labels_(x, y) = target;
     compact_ = false;
+}
+
+bool PixelMap::reassignPixel(int x, int y, RegionId to, sla::Rgba8 color) {
+    if (!labels_.inBounds(x, y)) throw std::out_of_range("PixelMap::reassignPixel: pixel fora da imagem");
+    forest_.checkId(to, "PixelMap::reassignPixel");
+    const RegionId from = regionAt(x, y);
+    if (from == kNoRegion) throw std::logic_error("PixelMap::reassignPixel: pixel sem região");
+    const RegionId target = forest_.find(to);
+    if (target == from) return false;
+    std::array<RegionId, 4> around{kNoRegion, kNoRegion, kNoRegion, kNoRegion};
+    for (std::size_t d = 0; d < 4; ++d) {
+        const int qx = x + kDx4[d];
+        const int qy = y + kDy4[d];
+        if (labels_.inBounds(qx, qy)) around[d] = regionAt(qx, qy);
+    }
+    moveUnchecked(x, y, from, target, color, around);
     return true;
 }
 

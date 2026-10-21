@@ -85,8 +85,8 @@ cnx-praia/
 │     ├─ preprocess/  [Preprocessor.h  SignalImage.h  EdgeImage.h  FlowField.h  AADetector.h]
 │     ├─ classify/    [ImageFeatures.h  DecisionTree.h  ImageClassification.h]
 │     ├─ palette/     [ColorHistogram.h  KMeans.h  PaletteFinder.h  WeightsFinder.h]
-│     ├─ segment/     PixelMap.h  [QuadTree.h  PixelSegmenter.h  SuperPixelSegmenter.h
-│     │                SubPixelSegmenter.h  CoOccurrenceMatrix.h  BipartiteMatcher.h
+│     ├─ segment/     PixelMap.h  QuadTree.h  PixelSegmenter.h  SubPixelSegmenter.h
+│     │               [SuperPixelSegmenter.h  CoOccurrenceMatrix.h  BipartiteMatcher.h
 │     │                SegmentationTrainer.h]
 │     ├─ vector/      VectorImage.h  BoundaryTracer.h  GenerativeModel.h  ContourSmoother.h
 │     │               Optimizer.h  EnergyTerms.h  CrossingGuard.h   (a grade de segmentos mora em CrossingGuard)
@@ -103,7 +103,8 @@ cnx-praia/
 │  ├─ unit/           test_harness.h, test_support.h, header_smoke_test, pixel_map_test,
 │  │                  pixel_segmenter_test, vector_image_test, boundary_tracer_test,
 │  │                  generative_model_test, energy_terms_test, optimizer_test, crossing_guard_test,
-│  │                  contour_smoother_test, bezier_curve_test, bezier_fitter_test
+│  │                  contour_smoother_test, bezier_curve_test, bezier_fitter_test,
+│  │                  sub_pixel_segmenter_test
 │  └─ golden/         imagens + SVG de referência (regressão)
 ├─ bench/             (Google Benchmark: k-means, segmentação, CG, ajuste Bézier)
 └─ third_party/       ann/  dxflib/
@@ -526,6 +527,34 @@ O passo de Schur coincide com a solução do sistema denso (k+m)×(k+m) (testado
 - **Escapam (2).** Não consegui construir um caso que os alcance, então são lacunas de cobertura reais:
   - *Sem a monotonia de t (F7):* nenhum dado dos testes, nem uma polilinha que volta sobre si mesma, leva o Newton a ordenar os t de forma errada.
   - *Fusão que aceita fragmento degenerado (F14):* a degeneração só ocorre com G¹ nas duas pontas, e nem a estrela serrilhada fechada produz uma união degenerada que o código original recuse.
+
+### 1.15 `SubPixelSegmenter`: decisões de implementação
+
+**Onde entra.** Roda depois do `PixelSegmenter`, sobre o mesmo `PixelMap` e a mesma imagem (as cores dos pixels alimentam as medianas). É o modo "com mistura nas bordas" da §4: pixels de antialiasing não podem virar regiões finas de cor intermediária. A saída já vem compactada, com cor e índice de paleta em cada região, e alimenta o `BoundaryTracer`.
+
+**Estágios**, todos públicos para teste:
+1. **Micro-regiões** (`mergeMicroRegions`). Para tamanho s = 1..`microRegionMaxPixels`, funde toda região com ≤ s pixels à vizinha de cor mais próxima (empate → maior contato → menor id), repetindo até estabilizar. A ordem crescente importa: no teste, uma região de 1 px prefere a de 2 px (distância 60) à grande (110), e a de 2 px prefere a grande (50). Em ordem crescente a primeira vai para a de 2 px, que passa a ter 3 pixels e sobrevive; uma varredura única por id absorveria a de 2 px e depois a de 1 px, e a região sumiria.
+2. **Praias** (`splitAndMergeBeaches`). Uma região é praia quando:
+   - tem pelo menos duas vizinhas e as duas de maior contato cobrem ≥ `beachNeighborShare` (0,8) do contorno;
+   - o contraste entre elas é ≥ `beachMinContrast` (‖cor_B − cor_A‖² ≥ 0,02);
+   - a cor da região projeta-se em t ∈ (0,02; 0,98) sobre a reta A→B e fica a ≤ `beachLineTolerance` · ‖cor_B − cor_A‖ dela (uma faixa de terceira cor não é praia);
+   - é fina: nenhum pixel é interior (todo pixel toca outra região ou a borda da imagem), ou seja, tem 1 ou 2 px de largura (uma banda larga é uma região de verdade).
+
+   Cada pixel da praia vai para o lado de sua própria cor (t < ½ → A, senão B), por `tryMovePixel` em varreduras repetidas: só se movem pixels que são pontos simples da praia e vizinhos do destino, então as pontas da faixa saem primeiro e as demais viram pontas em seguida. O último pixel de uma faixa de largura 1 não é ponto simples (removê-lo apagaria a região); ele é fundido inteiro (`unite`) ao lado da sua cor. O resultado tem a fronteira no meio da transição e preserva a 4-conexidade.
+3. **Sombras** (`flagShadowSegments` e `rebuildShadowSegments`). Marca com `RegionFlag::Shadow` a região com ≥ `shadowMinPixels` pixels, variância de cor ≥ `shadowVariance` (soma dos 4 canais) e variância da imagem desfocada ≥ `shadowSmoothRatio` · variância bruta. O desfoque de caixa preserva um gradiente e elimina o ruído, então a razão separa as duas coisas: um gradiente tem razão ≈ 1 e um ruído de ±12 níveis, ≈ 0,04. A reconstrução classifica cada pixel da região pela cor de paleta mais próxima da imagem **desfocada**, extrai as componentes 4-conexas de cada cor (a maior mantém o id; as outras viram regiões novas, via `reassignPixel`) e deixa a fronteira nas faixas do gradiente. Pela imagem bruta, o ruído fragmentaria a fronteira em ilhas (testado).
+4. **Paleta.** `snapColorsToPalette` dá a cada região a cor da paleta mais próxima da sua média; `mergeSamePaletteNeighbors` funde vizinhas 4-adjacentes com o mesmo índice (`clusterColors`); `enforceMinNumPixels` funde as regiões com menos de `minRegionPixels` à vizinha de cor mais próxima, e a cor e o índice da vizinha prevalecem (a união pode escolher a raiz da região pequena); `compact()` renumera (`buildRegions`).
+
+**`PixelMap::reassignPixel`** (novo). Move um pixel para qualquer região, sem teste topológico, atualizando contagens, medianas, caixas e contatos com o mesmo código de `tryMovePixel` (extraído para `moveUnchecked`). Serve às reconstruções; quem o usa responde pela 4-conexidade. `SubPixelSegmenter::splitDisconnected` restaura essa garantia: divide cada região nas suas componentes (a maior mantém o id). No `run` ele é só uma verificação: os estágios acima preservam a conexidade, e o contador `splitRegions` fica em 0.
+
+**Parâmetros novos** (`SegmentParams`, todos a calibrar): `microRegionMaxPixels` 2, `beachLineTolerance` 0,25, `beachMinContrast` 0,02, `beachNeighborShare` 0,8, `shadowVariance` 2e-3, `shadowSmoothRatio` 0,5, `shadowMinPixels` 16, `shadowBlurRadius` 2.
+
+**Resultado medido.** Disco com antialiasing (raio 11,4, supersampling 16×16, imagem de 40×40 quantizada em 8 bits): o `PixelSegmenter` sozinho deixa 4 regiões (as duas cores e mais duas de transição, que o estágio de sombras marca). O `SubPixelSegmenter` reduz a 2 (fundo e disco), com cores exatas da paleta e 0 divergências contra "cobertura ≥ ½" (410 pixels escuros; a verdade analítica é 408,3). O mapa resultante passa em `validate()` (I1–I4) com uma face por região.
+
+**Testes** (`sub_pixel_segmenter_test`, 15): `reassignPixel` contra força bruta (tamanhos, medianas, contatos em 4 cenas com 300 reatribuições cada) e seus argumentos; micro-regiões em ordem crescente; praias de 1 e 2 pixels; quatro casos que não são praia (terceira cor, banda larga, contraste baixo, contorno repartido em três); sombra marcada só no gradiente (não no chapado nem no ruído); reconstrução em faixas, com e sem ruído; paleta, mínimo de pixels e a fronteira de exatamente 4 px; `splitDisconnected`; o disco com antialiasing; determinismo, cancelamento e validação de argumentos.
+
+**Teste de mutação** (17 defeitos injetados um por vez, em Release):
+- **Detectados na primeira rodada (15).** Micro-regiões do maior para o menor; vizinha mais distante; pixel da praia no lado oposto; praia sem o teste de espessura, da reta A–B, da fração de contorno ou do contraste; sombra sem o teste de suavidade ou de variância; reconstrução pela imagem bruta (o teste com ruído); mínimo de pixels inclusivo (a região de exatamente 4 px); `splitDisconnected` ficando com a última componente; micro-regiões acima do tamanho da vez; paleta sem checar o índice; `reassignPixel` sem o caso "já pertence" e sem o contato do destino.
+- **Escaparam e agora são detectados (2).** Regiões sem índice de paleta (−1) que se fundiriam entre si (o pipeline nunca chega a esse estado; um teste de estágio o cobre) e a cor da vizinha que deve prevalecer em `enforceMinNumPixels` quando a união escolhe a raiz da região pequena (empate de tamanho com o menor id; também é um teste de estágio).
 
 ---
 

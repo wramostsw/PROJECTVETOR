@@ -199,6 +199,12 @@ public:
     /// Lança std::invalid_argument se `to` já é a região do pixel ou não é 4-vizinha dele.
     bool tryMovePixel(int x, int y, RegionId to, sla::Rgba8 color);
 
+    /// Move o pixel para a região de `to` SEM teste topológico (reconstrução de regiões, como as de
+    /// sombra). Atualiza estatísticas e contatos como tryMovePixel. O chamador responde pela
+    /// 4-conexidade das regiões afetadas. Retorna false (sem efeito) se o pixel já é da região;
+    /// não exige que `to` seja vizinha, e a região de origem pode ficar vazia.
+    bool reassignPixel(int x, int y, RegionId to, sla::Rgba8 color);
+
     /// Teste de ponto simples, O(1) (Rosenfeld 1970; Yokoi et al. 1975).
     /// Com R = região de p em 4-conectividade e R̄ em 8-conectividade (fora da imagem ∈ R̄):
     ///   p é simples  ⇔  T4(p, R) = 1 ∧ T8(p, R̄) = 1.
@@ -227,6 +233,8 @@ public:
     const sla::Rgba& regionColor(RegionId region) const;
 
 private:
+    void moveUnchecked(int x, int y, RegionId from, RegionId target, sla::Rgba8 color, const std::array<RegionId, 4>& around);
+
     sla::Array2D<RegionId> labels_;
     RegionForest forest_;
     bool compact_ = false;

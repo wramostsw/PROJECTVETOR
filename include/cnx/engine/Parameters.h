@@ -97,6 +97,16 @@ struct SegmentParams {
     double whatIfFactor = 1.0;
     int finalSweepCap = 8;       ///< varreduras extras de juntar/trocar/diagonal no limiar máximo (convergência)
 
+    // ---- SubPixelSegmenter (§4, regiões com antialiasing) — todos a calibrar ----
+    int microRegionMaxPixels = 2;      ///< limpa regiões de 1 px, depois 2 px… até este tamanho
+    double beachLineTolerance = 0.25;  ///< praia: distância da cor à reta A–B ≤ tolerância · ‖cor_B − cor_A‖
+    double beachMinContrast = 0.02;    ///< praia: ‖cor_B − cor_A‖² mínimo entre as cores dominantes
+    double beachNeighborShare = 0.8;   ///< praia: fração do contato que as duas dominantes devem somar
+    double shadowVariance = 2.0e-3;    ///< sombra: variância de cor mínima da região (Σ canais, [0, 1])
+    double shadowSmoothRatio = 0.5;    ///< sombra: variância da imagem desfocada / variância bruta mínima
+    int shadowMinPixels = 16;
+    int shadowBlurRadius = 2;          ///< raio do desfoque de caixa usado na detecção e na reconstrução
+
     Fingerprint fingerprint(Fingerprint upstream) const;
 };
 
