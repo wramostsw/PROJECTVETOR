@@ -91,6 +91,7 @@ cnx-praia/
 │     ├─ vector/      VectorImage.h  BoundaryTracer.h  GenerativeModel.h  ContourSmoother.h
 │     │               Optimizer.h  EnergyTerms.h  CrossingGuard.h   (a grade de segmentos mora em CrossingGuard)
 │     ├─ fit/         BezierFitter.h
+│     ├─ io/          ImageDecode.h  Inflate.h  PngDecoder.h  JpegDecoder.h  ImageFileLoader.h
 │     └─ export/      Exporter.h  [SvgWriter.h  EpsWriter.h  AiWriter.h
 │                      CompatiblePdfWriter.h  DxfWriter.h]
 ├─ src/               (espelha include/; hoje: segment/PixelMap.cpp, QuadTree.cpp, PixelSegmenter.cpp,
@@ -99,7 +100,8 @@ cnx-praia/
 │                      sla/BezierCurve.cpp; palette/*.cpp; segment/SubPixelSegmenter.cpp;
 │                      engine/CoreEngine.cpp, Parameters.cpp, ParameterFiler.cpp; preprocess/Preprocessor.cpp,
 │                      SignalImage.cpp, EdgeImage.cpp, AADetector.cpp, FlowField.cpp;
-│                      classify/Classifier.cpp; export/ExporterSettings.cpp)
+│                      classify/Classifier.cpp; export/ExporterSettings.cpp;
+│                      io/Inflate.cpp, PngDecoder.cpp, JpegDecoder.cpp, ImageDecode.cpp)
 ├─ qt/                EngineController.{h,cpp}  QImageLoader.{h,cpp}
 ├─ tests/
 │  ├─ math/           validate_math.py   (validação numérica das fórmulas)
@@ -109,7 +111,8 @@ cnx-praia/
 │  │                  contour_smoother_test, bezier_curve_test, bezier_fitter_test,
 │  │                  sub_pixel_segmenter_test, palette_test, weights_finder_test,
 │  │                  parameters_test, preprocess_classify_test, core_engine_test, parameter_filer_test,
-│  │                  edge_classifier_test, flow_field_test, signal_image_test
+│  │                  edge_classifier_test, flow_field_test, signal_image_test, image_decoder_test
+│  ├─ data/           make_fixtures.py, make_gdiplus_fixtures.ps1, manifest*.txt e os arquivos de referência
 │  └─ golden/         imagens + SVG de referência (regressão)
 ├─ bench/             (Google Benchmark: k-means, segmentação, CG, ajuste Bézier)
 └─ third_party/       ann/  dxflib/
@@ -970,6 +973,79 @@ A especificação só dá o nome do módulo. Na arquitetura (§0, item 2, e §1.
 - **Equivalentes, mantidos (2):**
   - o limite [0, 1] de `straight`: com c = 255, r·a e a arredondam para o mesmo float, e os filtros usam os mesmos pesos em todos os canais. Por isso r ≤ a vale, e o limite é só uma proteção.
   - o CoreEngine usar o alvo de 8 bits no lugar do sinal: a diferença é a quantização (≤ ½ nível), abaixo da tolerância dos testes do motor. A exatidão está coberta no teste do `preprocess` (o meio nível), que é o sinal que o CoreEngine repassa.
+
+### 1.23 Leitura de imagens: PNG, JPEG e zlib próprios
+
+**Decisão.** Os decodificadores são próprios, em C++20 puro (camada `cnx/io`), sem dependência nem arquivo de terceiros. As alternativas avaliadas foram o stb_image (domínio público, mas sem DPI e sem cancelamento no meio da decodificação) e o WIC do Windows (não portável). O núcleo continua portável. O adaptador Qt previsto (`QImageLoader`) fica opcional.
+
+**Peças:**
+- **`Inflate`** (RFC 1950/1951):
+  - blocos armazenados, Huffman fixo e dinâmico;
+  - Huffman canônico com tabela rápida de 9 bits e, para os códigos longos, o caminho bit a bit do `puff.c`;
+  - códigos superdimensionados são recusados, e os incompletos só no caso que a RFC permite;
+  - teto exato de saída: o PNG sabe o tamanho, e passar dele é erro, o que barra as bombas de descompressão;
+  - Adler-32 e CRC-32 (tabela gerada em tempo de compilação).
+- **`PngDecoder`:**
+  - os 5 tipos de cor em todas as profundidades válidas, os 5 filtros, Adam7, tRNS (chave e alfa da paleta) e pHYs;
+  - CRC errado num chunk crítico é erro; num chunk ancilar, o chunk é ignorado;
+  - 16 → 8 bits por arredondamento; profundidades menores que 8 são escaladas exatamente.
+- **`JpegDecoder`:**
+  - baseline, sequencial estendido e progressivo (DC e AC, primeira passada e refinamento), com reinícios;
+  - todos os modos decodificam para um buffer de coeficientes. A tabela de quantização é fixada no primeiro scan de cada componente, como no libjpeg; depois vêm a IDCT em double e o croma por interpolação linear centrada;
+  - cores: cinza, YCbCr, RGB (pelo marcador Adobe ou pelos ids 'R', 'G', 'B') e CMYK/YCCK na convenção Adobe;
+  - DPI pelo JFIF ou, sem ele, pelo EXIF; a orientação EXIF é aplicada;
+  - bytes estranhos entre segmentos são pulados, como faz o libjpeg; falta de EOI com os scans completos é aceita; dados entrópicos truncados são erro.
+- **`ImageFileLoader : IImageLoader`:**
+  - o formato vem da assinatura, não da extensão;
+  - limites de tamanho do arquivo e de pixels, conferidos antes de alocar;
+  - o `stop_token` é consultado na leitura, a cada linha do PNG, a cada linha de MCUs do JPEG e a cada 64 KiB descomprimidos.
+
+**Validação independente** (`tests/data`):
+- `make_fixtures.py` (só a biblioteca padrão do Python) gera:
+  - PNGs com todos os tipos de cor, profundidades, Adam7 (com passadas vazias), filtros variados, IDAT repartido e chunks ancilares (inclusive um com CRC errado). O esperado são as amostras de origem convertidas pela norma;
+  - fluxos zlib e DEFLATE em vários níveis e estratégias;
+  - JPEGs feitos por um codificador próprio em Python: DCT pela definição, tabelas de Huffman ótimas (anexo K.2), e o progressivo pelo algoritmo de codificação do libjpeg (EOBRUN e bits de correção). O esperado é a reconstrução dos coeficientes que o próprio codificador quantizou, com a orientação EXIF aplicada por composição de giros.
+- `make_gdiplus_fixtures.ps1` gera um JPEG e um PNG pelo GDI+ do Windows (um codificador de terceiros), com a decodificação do próprio GDI+ como referência.
+
+**Medido:**
+- Os **36 JPEGs** decodificam **bit a bit iguais** à reconstrução de referência: 6 amostragens, cinza, reinícios, scans separados, DQT de 16 bits, 4 roteiros progressivos, RGB, CMYK, YCCK, DPI pelo JFIF e pelo EXIF e as 8 orientações.
+- O JPEG do GDI+ difere em no máximo **2 níveis** (média de 0,21), por causa de outra IDCT e de outra ampliação do croma.
+- Os **36 PNGs** e os **11 fluxos zlib/DEFLATE** são idênticos.
+- Velocidade, 4000 × 3000 (Release, uma thread): PNG em 0,41–0,49 s e JPEG em 0,92 s.
+
+**Limites:**
+- **Gerência de cor:** não há. gAMA, cHRM, sRGB, iCCP e perfis ICC do JPEG são ignorados, e os valores saem como estão no arquivo.
+- **JPEG não suportado:** codificação aritmética, sem perdas, hierárquico, 12 bits e DNL. Todos dão erro com o motivo.
+- **Outros formatos:** só PNG e JPEG (nada de GIF, BMP, TIFF ou WebP), e do APNG só a imagem padrão. O EXIF de PNG (eXIf) não é lido.
+- **Velocidade do JPEG:** a IDCT em double e a ampliação do croma por pixel são cerca de 10–20× mais lentas que o libjpeg-turbo. Para o motor isso é aceitável, porque a vetorização leva segundos ou minutos; se for preciso, os caminhos óbvios são uma IDCT AAN em inteiros e linhas inteiras de croma.
+
+**Segurança de memória.** A build Debug (asserções da biblioteca padrão) achou um defeito que a Release escondia. Numa tabela de Huffman JPEG superdimensionada, o código passava de 2^len *antes* da verificação do fim do comprimento, e o preenchimento da tabela rápida escrevia fora dela. Um arquivo malformado chegava a isso. A verificação agora vem antes de cada uso. Para os erros que ninguém pensou em montar, há um fuzz determinístico: 3600 variações corrompidas (bytes trocados, cortes, FF inseridos) de 9 arquivos de referência. Em Debug, todas terminam em `ImageDecodeError` ou numa imagem, sem nenhuma outra exceção nem asserção (3238 recusadas, 362 decodificadas).
+
+**Testes** (`image_decoder_test`, 8 casos):
+- os 72 arquivos de referência, com pixels, dimensões, DPI, alfa e formato;
+- os fluxos zlib e as somas de verificação conhecidas;
+- fluxos zlib e DEFLATE inválidos, montados bit a bit, cada um com o motivo;
+- PNGs inválidos montados à mão: assinatura, CRC, IHDR, dados a mais ou a menos, filtro, chunk crítico desconhecido, paleta, tRNS, IDAT não consecutivos, limite;
+- JPEGs inválidos derivados de um válido: SOI, modos não suportados, 12 bits, DNL, tabelas ausentes ou superdimensionadas, truncamento, componente, dois quadros, RST ausente, limite;
+- o fuzz de 3600 arquivos corrompidos;
+- o carregador: assinatura contra extensão, arquivo inexistente, limites e cancelamento;
+- o CoreEngine vetorizando um PNG lido do disco, e falhando com a mensagem certa num arquivo que não é imagem.
+
+**Teste de mutação** (82 defeitos injetados um por vez, em Release):
+- **Detectados na primeira rodada (77):**
+  - *zlib:* NLEN, bits extras de comprimento e de distância, distância antes do início, teto de saída, cópia com sobreposição, ordem e bases das repetições do código de comprimentos, literais incompletos, Adler-32, tamanho exato, FCHECK, janela, dicionário, módulo do Adler, polinômio do CRC.
+  - *PNG:* CRC crítico, filtros Average, Sub e Paeth, 16 bits e profundidades baixas, ordem dos bits, Adam7, tRNS de cinza e da paleta, IDAT não consecutivos, chunk crítico desconhecido, pHYs, alfa por tRNS, passadas vazias, combinações inválidas, índice fora da paleta, PLTE exigido.
+  - *JPEG:* zigue-zague, EXTEND, predição do DC, ZRL, EOBRUN nas duas passadas, sinal e contagem do refinamento, bit do refinamento do DC, deslocamentos progressivos, reinícios (predição e marcador), IDCT, nível 128, quantização fixada no primeiro scan, constantes do YCbCr, croma centrado, Adobe RGB, ids RGB, CMYK, YCCK, orientação (ignorada, 6 como 8, DPI sem troca), unidades do JFIF e do EXIF, precedência do JFIF, EXIF big-endian, precisão, Huffman superdimensionado, truncamento, bytes estranhos, enchimento, falta de EOI.
+  - *Carregador:* assinatura de 3 bytes, limite do arquivo, parada, limite de pixels nos dois caminhos.
+- **Sobreviventes fechados com testes (2):**
+  - chave tRNS de RGB comparada só no vermelho: três pixels que diferem só no verde e no azul;
+  - tabela AC não exigida: a tabela AC 0 levada para outro destino tem de dar "AC ausente", e não ser decodificada como lixo.
+
+  Reexecutados (`-Only`), os 2 foram detectados.
+- **Equivalentes, mantidos (3):**
+  - *empate do Paeth* (`pa ≤ pb` contra `pa < pb`): pa = pb com a ≠ b obriga c = (a + b)/2, logo pc = 0 e c vence; o empate só ocorre com a = b;
+  - *refinamento AC de um coeficiente com o bit já ligado:* num fluxo válido esse bit é sempre 0, porque os scans anteriores pararam em Al + 1. A condição só protege contra fluxo corrompido, como no libjpeg;
+  - *croma limitado a n − 1:* o maior f possível é menor que n, e i1 já é limitado a n − 1, então o limite superior não muda nada.
 
 ---
 

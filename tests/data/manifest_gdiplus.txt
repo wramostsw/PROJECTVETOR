@@ -1,0 +1,2 @@
+jpeg gdiplus_photo 61 47 150.000000 150.000000 0 3
+png gdiplus_logo 61 47 150.000000 150.000000 1 0

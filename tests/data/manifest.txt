@@ -1,0 +1,81 @@
+png png_gray1 13 7 72.000000 72.000000 0 0
+png png_gray2 13 7 72.000000 72.000000 0 0
+png png_gray4 13 7 72.000000 72.000000 0 0
+png png_gray8 13 7 72.000000 72.000000 0 0
+png png_gray16 13 7 72.000000 72.000000 0 0
+png png_gray4_trns 11 6 72.000000 72.000000 1 0
+png png_gray16_trns 9 5 72.000000 72.000000 1 0
+png png_rgb8 17 9 72.000000 72.000000 0 0
+png png_rgb16 10 6 72.000000 72.000000 0 0
+png png_rgb8_trns 12 8 72.000000 72.000000 1 0
+png png_rgb16_trns 7 7 72.000000 72.000000 1 0
+png png_pal1 19 5 72.000000 72.000000 0 0
+png png_pal2_trns 14 6 72.000000 72.000000 1 0
+png png_pal4 15 7 72.000000 72.000000 0 0
+png png_pal8_trns 21 11 72.000000 72.000000 1 0
+png png_graya8 9 9 72.000000 72.000000 1 0
+png png_graya16 8 5 72.000000 72.000000 1 0
+png png_rgba8 23 13 72.000000 72.000000 1 0
+png png_rgba16 6 9 72.000000 72.000000 1 0
+png png_rgba8_adam7 33 19 72.000000 72.000000 1 0
+png png_pal2_adam7 13 11 72.000000 72.000000 0 0
+png png_gray16_adam7 9 10 72.000000 72.000000 0 0
+png png_gray1_adam7 5 3 72.000000 72.000000 0 0
+png png_rgb8_adam7_1x1 1 1 72.000000 72.000000 0 0
+png png_rgba8_adam7_3x2 3 2 72.000000 72.000000 1 0
+png png_rgb8_1x1 1 1 72.000000 72.000000 0 0
+png png_rgb8_stored 31 17 72.000000 72.000000 0 0
+png png_rgb8_fixed 31 17 72.000000 72.000000 0 0
+png png_rgb8_huffonly 31 17 72.000000 72.000000 0 0
+png png_rgb8_rle 31 17 72.000000 72.000000 0 0
+png png_rgba8_split 40 30 72.000000 72.000000 1 0
+png png_rgb8_phys 12 12 299.999400 150.012400 0 0
+png png_rgb8_badtext 8 8 72.000000 72.000000 0 0
+png png_rgba8_ancillary 10 10 72.000000 72.000000 1 0
+png png_rgba8_large 300 200 72.000000 72.000000 1 0
+zlib zlib_empty 0
+zlib zlib_text_l1 13400
+zlib zlib_text_l9 13400
+zlib zlib_zeros 70000
+zlib zlib_noise_stored 40000
+zlib zlib_noise_l6 40000
+zlib zlib_runs_fixed 58046
+zlib zlib_runs_rle 58046
+zlib zlib_text_huffonly 13400
+zlib zlib_text_window9 13400
+deflate deflate_text 13400
+jpeg jpeg_ycc444 32 24 72.000000 72.000000 0 0
+jpeg jpeg_ycc422 37 23 72.000000 72.000000 0 0
+jpeg jpeg_ycc420 37 23 72.000000 72.000000 0 0
+jpeg jpeg_ycc411 45 17 72.000000 72.000000 0 0
+jpeg jpeg_ycc440 21 30 72.000000 72.000000 0 0
+jpeg jpeg_ycc_mixed 29 27 72.000000 72.000000 0 0
+jpeg jpeg_gray 41 17 72.000000 72.000000 0 0
+jpeg jpeg_gray_restart 41 17 72.000000 72.000000 0 0
+jpeg jpeg_ycc420_restart 53 35 72.000000 72.000000 0 0
+jpeg jpeg_ycc420_separate 37 23 72.000000 72.000000 0 0
+jpeg jpeg_ycc420_q16 24 16 72.000000 72.000000 0 0
+jpeg jpeg_ycc420_progressive 53 35 72.000000 72.000000 0 0
+jpeg jpeg_ycc420_progressive_restart 53 35 72.000000 72.000000 0 0
+jpeg jpeg_gray_progressive 64 48 72.000000 72.000000 0 0
+jpeg jpeg_ycc444_spectral 32 32 72.000000 72.000000 0 0
+jpeg jpeg_adobe_rgb 24 16 72.000000 72.000000 0 0
+jpeg jpeg_rgb_ids 24 16 72.000000 72.000000 0 0
+jpeg jpeg_cmyk 24 16 72.000000 72.000000 0 0
+jpeg jpeg_ycck 24 16 72.000000 72.000000 0 0
+jpeg jpeg_jfif_dpi 16 16 300.000000 150.000000 0 0
+jpeg jpeg_jfif_dpcm 16 16 299.720000 299.720000 0 0
+jpeg jpeg_exif_dpi 16 16 240.000000 240.000000 0 0
+jpeg jpeg_exif_dpcm_be 16 16 254.000000 254.000000 0 0
+jpeg jpeg_orient1 13 7 72.000000 72.000000 0 0
+jpeg jpeg_orient2 13 7 72.000000 72.000000 0 0
+jpeg jpeg_orient3 13 7 72.000000 72.000000 0 0
+jpeg jpeg_orient4 13 7 72.000000 72.000000 0 0
+jpeg jpeg_orient5 7 13 72.000000 72.000000 0 0
+jpeg jpeg_orient6 7 13 72.000000 72.000000 0 0
+jpeg jpeg_orient7 7 13 72.000000 72.000000 0 0
+jpeg jpeg_orient8 7 13 72.000000 72.000000 0 0
+jpeg jpeg_fill_stray_noeoi 24 16 72.000000 72.000000 0 0
+jpeg jpeg_orient6_dpi 7 13 150.000000 300.000000 0 0
+jpeg jpeg_jfif_over_exif 16 16 300.000000 300.000000 0 0
+jpeg jpeg_progressive_dqt_redefined 32 24 72.000000 72.000000 0 0

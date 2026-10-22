@@ -63,7 +63,8 @@ struct SourceImage {
     double dpiY = 72.0;
 };
 
-/// Decodificador plugável. O adaptador Qt implementa com QImage (plugins nativos, sem ImageMagick).
+/// Decodificador plugável. O do núcleo é cnx::ImageFileLoader (PNG e JPEG próprios, cnx/io); um adaptador Qt
+/// pode implementar com QImage para outros formatos.
 class IImageLoader {
 public:
     virtual ~IImageLoader() = default;

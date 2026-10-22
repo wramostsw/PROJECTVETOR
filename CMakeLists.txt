@@ -38,7 +38,11 @@ add_library(cnx_core
   src/vector/CrossingGuard.cpp
   src/vector/ContourSmoother.cpp
   src/sla/BezierCurve.cpp
-  src/fit/BezierFitter.cpp)
+  src/fit/BezierFitter.cpp
+  src/io/Inflate.cpp
+  src/io/PngDecoder.cpp
+  src/io/JpegDecoder.cpp
+  src/io/ImageDecode.cpp)
 target_include_directories(cnx_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 find_package(Threads REQUIRED)
 target_link_libraries(cnx_core PUBLIC Threads::Threads)
@@ -49,11 +53,13 @@ foreach(test_name header_smoke_test pixel_map_test pixel_segmenter_test vector_i
                  contour_smoother_test bezier_curve_test bezier_fitter_test
                  sub_pixel_segmenter_test palette_test weights_finder_test
                  parameters_test preprocess_classify_test core_engine_test parameter_filer_test edge_classifier_test
-                 flow_field_test signal_image_test)
+                 flow_field_test signal_image_test image_decoder_test)
   add_executable(${test_name} tests/unit/${test_name}.cpp)
   target_link_libraries(${test_name} PRIVATE cnx_core)
   add_test(NAME ${test_name} COMMAND ${test_name})
 endforeach()
+# Arquivos de referência dos decodificadores (gerados por tests/data/make_fixtures.py e make_gdiplus_fixtures.ps1).
+target_compile_definitions(image_decoder_test PRIVATE CNX_TEST_DATA="${CMAKE_CURRENT_SOURCE_DIR}/tests/data")
 
 find_package(Python3 COMPONENTS Interpreter QUIET)
 if(Python3_Interpreter_FOUND)
