@@ -13,6 +13,7 @@
 #include <istream>
 #include <limits>
 #include <map>
+#include <numbers>
 #include <ostream>
 #include <sstream>
 #include <stdexcept>
@@ -230,6 +231,10 @@ std::vector<Field> buildFields() {
     f.push_back(integerField<int>("PixelSegmenter::min_region_pixels", [](auto& p) -> auto& { return p.segment.minRegionPixels; }));
     f.push_back(doubleField("PixelSegmenter::what_if_factor", [](auto& p) -> auto& { return p.segment.whatIfFactor; }));
     f.push_back(integerField<int>("PixelSegmenter::final_sweep_cap", [](auto& p) -> auto& { return p.segment.finalSweepCap; }));
+    f.push_back(boolField("PixelSegmenter::link_strokes", [](auto& p) -> auto& { return p.segment.linkStrokes; }));
+    f.push_back(doubleField("PixelSegmenter::flow_sigma_px", [](auto& p) -> auto& { return p.segment.flowSigmaPx; }));
+    f.push_back(doubleField("PixelSegmenter::stroke_min_coherence", [](auto& p) -> auto& { return p.segment.strokeMinCoherence; }));
+    f.push_back(doubleField("PixelSegmenter::stroke_max_angle", [](auto& p) -> auto& { return p.segment.strokeMaxAngle; }));
 
     f.push_back(integerField<int>("SubPixelSegmenter::micro_region_max_pixels", [](auto& p) -> auto& { return p.segment.microRegionMaxPixels; }));
     f.push_back(doubleField("SubPixelSegmenter::beach_line_tolerance", [](auto& p) -> auto& { return p.segment.beachLineTolerance; }));
@@ -327,6 +332,9 @@ const std::vector<Rule>& rules() {
         add({"PixelSegmenter::min_region_pixels"}, "PixelSegmenter::min_region_pixels deve ser >= 0", [](const EngineParameters& p) { return p.segment.minRegionPixels >= 0; });
         add({"PixelSegmenter::what_if_factor"}, "PixelSegmenter::what_if_factor deve ser finito e >= 0", [](const EngineParameters& p) { return atLeast(p.segment.whatIfFactor, 0.0); });
         add({"PixelSegmenter::final_sweep_cap"}, "PixelSegmenter::final_sweep_cap deve ser >= 0", [](const EngineParameters& p) { return p.segment.finalSweepCap >= 0; });
+        add({"PixelSegmenter::flow_sigma_px"}, "PixelSegmenter::flow_sigma_px deve ser finito e >= 0", [](const EngineParameters& p) { return atLeast(p.segment.flowSigmaPx, 0.0); });
+        add({"PixelSegmenter::stroke_min_coherence"}, "PixelSegmenter::stroke_min_coherence deve estar em [0, 1]", [](const EngineParameters& p) { return within(p.segment.strokeMinCoherence, 0.0, 1.0); });
+        add({"PixelSegmenter::stroke_max_angle"}, "PixelSegmenter::stroke_max_angle deve estar em (0, pi/4)", [](const EngineParameters& p) { return above(p.segment.strokeMaxAngle, 0.0) && p.segment.strokeMaxAngle < std::numbers::pi / 4.0; });
 
         add({"SubPixelSegmenter::micro_region_max_pixels"}, "SubPixelSegmenter::micro_region_max_pixels deve ser >= 0", [](const EngineParameters& p) { return p.segment.microRegionMaxPixels >= 0; });
         add({"SubPixelSegmenter::beach_line_tolerance"}, "SubPixelSegmenter::beach_line_tolerance deve ser finito e >= 0", [](const EngineParameters& p) { return atLeast(p.segment.beachLineTolerance, 0.0); });

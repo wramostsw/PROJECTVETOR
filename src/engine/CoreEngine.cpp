@@ -181,7 +181,8 @@ PixelMap segmentStage(const PreprocessedImage& pre, const Palette& palette, cons
         PixelSegmenter seg(pre.smooth, eff.segment, exactPaletteMap(pre.smooth, palette));
         for (int k = 0; k < eff.segment.finalSweepCap; ++k) {
             ctx.checkpoint(static_cast<double>(k) / std::max(1, eff.segment.finalSweepCap));
-            if (seg.diagonalSweep() == 0 && seg.mergeSmallRegions() == 0) break;
+            // Traços diagonais de 1 px primeiro: mergeSmallRegions apagaria os pixels deles um a um.
+            if (seg.linkStrokeSweep() == 0 && seg.diagonalSweep() == 0 && seg.mergeSmallRegions() == 0) break;
         }
         return seg.finish(&palette);
     }

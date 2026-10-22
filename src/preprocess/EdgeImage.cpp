@@ -14,18 +14,14 @@ int roundToPixel(double v) { return static_cast<int>(std::floor(v + 0.5)); }
 
 }  // namespace
 
-EdgeImage EdgeImage::compute(const sla::Array2D<sla::Rgba8>& image) {
+sla::Array2D<StructureTensor> sobelTensors(const sla::Array2D<sla::Rgba8>& image) {
     const int w = image.width();
     const int h = image.height();
-    EdgeImage out;
-    out.magnitude_ = sla::Array2D<float>(w, h);
-    out.normalX_ = sla::Array2D<float>(w, h);
-    out.normalY_ = sla::Array2D<float>(w, h);
+    sla::Array2D<StructureTensor> out(w, h);
     if (w == 0 || h == 0) return out;
     // Em inteiros sobre os 8 bits: exato (região chapada dá 0, não 1e-17) e independente da ordem das somas.
     const auto px = [&](int x, int y) -> const sla::Rgba8& { return image(std::clamp(x, 0, w - 1), std::clamp(y, 0, h - 1)); };
     const auto channel = [](const sla::Rgba8& p, std::size_t c) -> int { return c == 0 ? p.r : c == 1 ? p.g : c == 2 ? p.b : p.a; };
-    constexpr double kScale = 1.0 / (4.0 * 255.0);
     for (int y = 0; y < h; ++y) {
         for (int x = 0; x < w; ++x) {
             const std::array<const sla::Rgba8*, 9> n{&px(x - 1, y - 1), &px(x, y - 1), &px(x + 1, y - 1), &px(x - 1, y), &px(x, y),
@@ -42,10 +38,28 @@ EdgeImage EdgeImage::compute(const sla::Array2D<sla::Rgba8>& image) {
                 jyy += gy * gy;
                 jxy += gx * gy;
             }
-            const std::int64_t sum = jxx + jyy;
-            out.magnitude_(x, y) = static_cast<float>(std::sqrt(static_cast<double>(sum)) * kScale);
-            if (sum > 0) {
-                const double theta = 0.5 * std::atan2(2.0 * static_cast<double>(jxy), static_cast<double>(jxx - jyy));
+            out(x, y) = {static_cast<float>(jxx), static_cast<float>(jxy), static_cast<float>(jyy)};
+        }
+    }
+    return out;
+}
+
+EdgeImage EdgeImage::compute(const sla::Array2D<sla::Rgba8>& image) {
+    const int w = image.width();
+    const int h = image.height();
+    EdgeImage out;
+    out.magnitude_ = sla::Array2D<float>(w, h);
+    out.normalX_ = sla::Array2D<float>(w, h);
+    out.normalY_ = sla::Array2D<float>(w, h);
+    const sla::Array2D<StructureTensor> tensors = sobelTensors(image);
+    for (int y = 0; y < h; ++y) {
+        for (int x = 0; x < w; ++x) {
+            // Inteiros exatos em float: as somas e a diferença abaixo também são exatas.
+            const StructureTensor& t = tensors(x, y);
+            const double sum = static_cast<double>(t.xx) + static_cast<double>(t.yy);
+            out.magnitude_(x, y) = static_cast<float>(std::sqrt(sum) * kSobelScale);
+            if (sum > 0.0) {
+                const double theta = 0.5 * std::atan2(2.0 * static_cast<double>(t.xy), static_cast<double>(t.xx) - static_cast<double>(t.yy));
                 out.normalX_(x, y) = static_cast<float>(std::cos(theta));
                 out.normalY_(x, y) = static_cast<float>(std::sin(theta));
             }

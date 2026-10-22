@@ -108,6 +108,10 @@ EngineParameters randomParams(cnxtest::SplitMix64& rng) {
     p.segment.minRegionPixels = rng.below(50);
     p.segment.whatIfFactor = wide(rng);
     p.segment.finalSweepCap = rng.below(20);
+    p.segment.linkStrokes = rng.below(2) != 0;
+    p.segment.flowSigmaPx = wide(rng);
+    p.segment.strokeMinCoherence = cnxtest::uniform01(rng);
+    p.segment.strokeMaxAngle = 0.78 * cnxtest::uniform01(rng) + 1e-6;
     p.segment.microRegionMaxPixels = rng.below(8);
     p.segment.beachLineTolerance = wide(rng);
     p.segment.beachMinContrast = wide(rng);
@@ -256,6 +260,10 @@ CNX_TEST(every_field_has_exactly_one_line_and_changing_it_changes_only_that_line
         {"PixelSegmenter::min_region_pixels", [](auto& p) { p.segment.minRegionPixels = 9; }},
         {"PixelSegmenter::what_if_factor", [](auto& p) { p.segment.whatIfFactor = 2.0; }},
         {"PixelSegmenter::final_sweep_cap", [](auto& p) { p.segment.finalSweepCap = 3; }},
+        {"PixelSegmenter::link_strokes", [](auto& p) { p.segment.linkStrokes = !p.segment.linkStrokes; }},
+        {"PixelSegmenter::flow_sigma_px", [](auto& p) { p.segment.flowSigmaPx = 2.0; }},
+        {"PixelSegmenter::stroke_min_coherence", [](auto& p) { p.segment.strokeMinCoherence = 0.75; }},
+        {"PixelSegmenter::stroke_max_angle", [](auto& p) { p.segment.strokeMaxAngle = 0.5; }},
         {"SubPixelSegmenter::micro_region_max_pixels", [](auto& p) { p.segment.microRegionMaxPixels = 5; }},
         {"SubPixelSegmenter::beach_line_tolerance", [](auto& p) { p.segment.beachLineTolerance = 0.5; }},
         {"SubPixelSegmenter::beach_min_contrast", [](auto& p) { p.segment.beachMinContrast = 0.1; }},
@@ -465,6 +473,11 @@ CNX_TEST(range_and_cross_field_rules_blame_the_last_line_that_defines_a_field_in
     expectError("PixelSegmenter::merge_thresh_max 1e-5\n", 1, "merge_thresh_max");  // < start (1e-4)
     expectError("PixelSegmenter::merge_thresh_start 0\n", 1, "merge_thresh_start");
     expectError("PixelSegmenter::min_region_pixels -1\n", 1, "min_region_pixels");
+    expectError("PixelSegmenter::flow_sigma_px -0.5\n", 1, "flow_sigma_px");
+    expectError("PixelSegmenter::stroke_min_coherence 1.01\n", 1, "stroke_min_coherence");
+    expectError("PixelSegmenter::stroke_min_coherence -0.01\n", 1, "stroke_min_coherence");
+    expectError("PixelSegmenter::stroke_max_angle 0\n", 1, "stroke_max_angle");
+    expectError("PixelSegmenter::stroke_max_angle 0.7853981633974483\n", 1, "stroke_max_angle");  // π/4: as duas diagonais empatam
     expectError("SubPixelSegmenter::beach_neighbor_share 2\n", 1, "beach_neighbor_share");
     expectError("SubPixelSegmenter::shadow_blur_radius -1\n", 1, "shadow_blur_radius");
     expectError("ContourSmoother::prior_type 2\n", 1, "prior_type");
@@ -484,7 +497,8 @@ CNX_TEST(range_and_cross_field_rules_blame_the_last_line_that_defines_a_field_in
     EngineParameters p;
     CHECK(!tryRead("PaletteFinder::min_colors 4\nPaletteFinder::max_colors 4\nPaletteFinder::histogram_bins 2\nPaletteFinder::exact_color_min_share 1\n"
                    "PixelSegmenter::merge_thresh_max 1e-4\nBezierFitter::stat_thresh_final 1e-8\nBezierFitter::initial_fragment_nodes 2\nBezierFitter::max_rounds 1\n"
-                   "ContourSmoother::puncture_on_phase 2\nContourSmoother::spacing_weight 0 0 0\n",
+                   "ContourSmoother::puncture_on_phase 2\nContourSmoother::spacing_weight 0 0 0\n"
+                   "PixelSegmenter::flow_sigma_px 0\nPixelSegmenter::stroke_min_coherence 1\nPixelSegmenter::stroke_max_angle 0.785\n",
                    p)
                 .threw);
     // Incoerência que vem dos valores anteriores ao arquivo: linha 0.

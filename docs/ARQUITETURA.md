@@ -82,7 +82,7 @@ cnx-praia/
 │  ├─ sla/            Vec.h  Array.h  BezierCurve.h  [linalg.h  Prng.h  Timers.h  Memory.h]
 │  └─ cnx/
 │     ├─ engine/      CoreEngine.h  Parameters.h (inclui ParameterFiler)  Fingerprint.h  TaskContext.h
-│     ├─ preprocess/  Preprocessor.h  EdgeImage.h  AADetector.h  [SignalImage.h  FlowField.h]
+│     ├─ preprocess/  Preprocessor.h  EdgeImage.h  AADetector.h  FlowField.h  [SignalImage.h]
 │     ├─ classify/    Classifier.h (medidas + árvore)
 │     ├─ palette/     ColorHistogram.h  KMeans.h  PaletteFinder.h  WeightsFinder.h
 │     ├─ segment/     PixelMap.h  QuadTree.h  PixelSegmenter.h  SubPixelSegmenter.h
@@ -98,7 +98,7 @@ cnx-praia/
 │                      Optimizer.cpp, CrossingGuard.cpp, ContourSmoother.cpp; fit/BezierFitter.cpp;
 │                      sla/BezierCurve.cpp; palette/*.cpp; segment/SubPixelSegmenter.cpp;
 │                      engine/CoreEngine.cpp, Parameters.cpp, ParameterFiler.cpp; preprocess/Preprocessor.cpp,
-│                      EdgeImage.cpp, AADetector.cpp;
+│                      EdgeImage.cpp, AADetector.cpp, FlowField.cpp;
 │                      classify/Classifier.cpp; export/ExporterSettings.cpp)
 ├─ qt/                EngineController.{h,cpp}  QImageLoader.{h,cpp}
 ├─ tests/
@@ -109,7 +109,7 @@ cnx-praia/
 │  │                  contour_smoother_test, bezier_curve_test, bezier_fitter_test,
 │  │                  sub_pixel_segmenter_test, palette_test, weights_finder_test,
 │  │                  parameters_test, preprocess_classify_test, core_engine_test, parameter_filer_test,
-│  │                  edge_classifier_test
+│  │                  edge_classifier_test, flow_field_test
 │  └─ golden/         imagens + SVG de referência (regressão)
 ├─ bench/             (Google Benchmark: k-means, segmentação, CG, ajuste Bézier)
 └─ third_party/       ann/  dxflib/
@@ -753,7 +753,7 @@ No ruído ±5, as amostras com rmse acima de 0,05 têm lift de 4 a 16 (faixas fi
 - **O nível HIG/MED/LOW não é medido:** a especificação não diz como escolhê-lo. O classificador escolhe a família e devolve o nível MED; os outros nove perfis continuam disponíveis por `forcedProfile`.
 - **A extensão não decide sozinha:** um PNG salvo como .jpg sem ruído é logo. O JPEG só endurece o limiar de cobertura. Artefatos de bloco 8×8 (um JPEG salvo como PNG) não são medidos.
 - **Gradiente suave e de baixo contraste** (poucas faixas do histograma, cada uma um pico, erro < 0,05) passaria como logo posterizado; o gradiente amplo do corpus vai para foto pela regra 1.
-- `SignalImage` e `FlowField` (campo de orientação para traços finos) continuam fora; a orientação por pixel já existe em `EdgeImage::normal`.
+- `SignalImage` continua fora. O `FlowField` (campo de orientação para traços finos) está na §1.20; o classificador não o usa.
 
 **Testes** (`edge_classifier_test`, 12 casos):
 - *EdgeImage:* imagem chapada e vazia; magnitude, normal e uma crista por cruzamento em degraus vertical, horizontal, diagonal e de canais opostos; borda só no alfa; igualdade com os pesos da paleta; cristas de um disco.
@@ -776,6 +776,110 @@ No ruído ±5, as amostras com rmse acima de 0,05 têm lift de 4 a 16 (faixas fi
   - *Pico de reserva fixo em vez da célula mais cheia (quando nenhuma célula chega a 1 %):* 1585 cores distintas e 15 pixels pretos. O rmse esperado é exatamente a distância de cada pixel ao preto.
 
   Reexecutados (`-Only`), os 7 foram detectados.
+
+### 1.20 `FlowField` e a ligação de traços finos
+
+A especificação descreve o `FlowField` como um campo de direções que calcula a orientação das bordas "para preservar traços finos durante a segmentação e suavização". Antes de escrever o campo, medi o que acontece com um traço fino sem ele.
+
+**O problema, medido.** Pense num traço preto de 1 px em diagonal sobre fundo branco. Os pixels dele só se tocam pela quina. Em 4-conectividade, que é o invariante do `PixelMap`, cada pixel é uma região de 1 px:
+- `joinSweep` não os une, porque eles não são vizinhos;
+- `diagonalSweep` não os vê, porque uma sela exige a mesma região nas duas pontas da diagonal;
+- `mergeSmallRegions` os apaga um a um.
+
+Resultado: um traço de 26 px numa imagem 32×32 termina em **1 região**, e o traço desaparece. Pelo motor (logo chapado, caminho da paleta exata), o mesmo traço vira **10 regiões**: os fragmentos preto+branco recebem, pela média, a cor mais próxima da paleta, que é o vermelho. Traços com inclinação qualquer (escadinha de Bresenham) e círculos finos sofrem o mesmo em cada degrau diagonal. O defeito está na segmentação. A suavização só recebe o que sobra dela.
+
+**O campo** ([FlowField.h](../include/cnx/preprocess/FlowField.h)):
+- *Integração do tensor.* O tensor de estrutura de Sobel nos 4 canais é integrado por uma gaussiana: J_σ = G_σ * Σ_c ∇I_c ∇I_cᵀ, separável, com raio ⌈3σ⌉, pesos exp(−k²/2σ²) normalizados e bordas replicadas. As unidades são as de m², então tr J₀ = m² do `EdgeImage`.
+- *Medidas por pixel:*
+  - energia λ₁ + λ₂;
+  - coerência (λ₁ − λ₂)/(λ₁ + λ₂) = √((Jxx − Jyy)² + 4Jxy²)/(Jxx + Jyy);
+  - tangente: o autovetor de λ₂, isto é, a direção ao longo da borda;
+  - alinhamento cos 2α com uma direção d, em forma fechada, sem trigonometria: −[(Jxx − Jyy)(dx² − dy²) + 2Jxy·2dxdy] / ((λ₁ − λ₂)‖d‖²).
+- *Por que integrar:*
+  - No centro de um traço de 1 px o gradiente de Sobel é **exatamente nulo**, porque os dois flancos se cancelam, e o `EdgeImage` não dá direção ali.
+  - O tensor soma ∇∇ᵀ, que não depende do sinal. Com σ = 1, o centro herda a direção do traço: coerência 1,0000, tangente (0,7071; 0,7071).
+  - Um xadrez de 1 px tem Sobel exatamente nulo, então não há campo.
+  - Um cruzamento tem coerência 0,000, e o canto de um quadrado tem 0,374.
+- *Sem duplicação de conta.* O Sobel inteiro saiu do `EdgeImage` para `sobelTensors`, que os dois módulos usam. Os valores são inteiros menores que 2²⁴, portanto exatos em float, e o `EdgeImage` dá os mesmos resultados bit a bit.
+
+**A ligação** (`PixelSegmenter::linkStrokeSweep`). Considere cada par diagonal p, q = p + (±1, 1) de regiões diferentes. As duas **pontes** (os 4-vizinhos comuns aos dois) precisam ser de outras regiões. O par é de traço quando três condições valem:
+1. **Cores:** dist²(p, q) ≤ `mergeThreshMax`, e a distância de p e de q a cada ponte é maior que esse limite.
+2. **Não é antialiasing:** a cor do traço não é mistura das duas pontes. O teste de reta é o mesmo das praias (`beachMinContrast`, `beachLineTolerance`). Assim, a escadinha cinza de uma borda a 45° entre preto e branco não é traço. O mesmo cinza entre vermelho e azul é: ele é um contorno.
+3. **Campo do par:** sobre a **soma dos tensores** de p e de q, a coerência é ≥ `strokeMinCoherence` e o alinhamento com a diagonal é ≥ cos(2·`strokeMaxAngle`). Exigir isso de cada pixel isoladamente falhava nas pontas: o pixel extremo de um traço tem coerência ≈ 0,48–0,50, em cima do limiar. A soma é a integração sobre as duas vizinhanças. Na ponta, o vizinho firma a direção; num canto, os dois pixels são isotrópicos e a soma também.
+
+Para ligar um par, uma ponte passa para a região de p, desde que seja ponto simples (`tryMovePixel`), e p e q são unidos. A ponte escolhida é, nesta ordem de preferência:
+1. a que não cria contatos novos (os outros dois 4-vizinhos dela são da sua própria região);
+2. a de cor mais próxima do traço (num traço com AA, a ponte que tem mais tinta);
+3. a horizontal.
+
+**Duas passadas.** A primeira passada só marca os pixels de traço, e a segunda liga, com uma regra extra: uma ponte nunca sai de um traço. Entre duas linhas paralelas a 1 px de distância (x − y = 0 e 2), a fileira branca do meio também "parece" traço. Com uma passada só, ligá-la roubava pixels das linhas e as partia. As três cadeias não cabem juntas em 4-conectividade, e ficam as duas que têm uma ponte livre.
+
+**Pontes fora da cor.** O primeiro teste pelo motor mostrou que o traço sobrevivia, mas **vermelho**. A região tinha 15 px de tinta e 14 pontes brancas; a média dava um cinza de ≈ 0,49, e a paleta o levava ao vermelho. A ponte é um pixel de fundo que só existe para a topologia. Por isso o `PixelMap` ganhou `excludeFromColorStats`: o pixel continua na região (contagem, contatos, ponto simples), mas sai do `MedianAccumulator`, e nenhuma amostra o acompanha quando ele é movido depois. Toda decisão de cor (mediana, média da paleta, `ColorCache` do SubPixelSegmenter) sai das amostras, então todos os caminhos passam a ver só a tinta.
+
+**Onde roda:**
+- `PixelSegmenter::run`, no laço final: ligar → fundir minúsculas → diagonal, até nenhum dos três mudar. A ligação vem antes de `mergeSmallRegions`.
+- O caminho da paleta exata do CoreEngine, no mesmo lugar.
+- O SubPixelSegmenter recebe o mapa já ligado.
+
+O campo é calculado uma vez por segmentação, sobre a imagem que o segmentador usa.
+
+**Parâmetros** (`SegmentParams`, chaves `PixelSegmenter::…` no `.apf`, todos a calibrar):
+
+| Parâmetro | Padrão | Faixa |
+|---|---|---|
+| `link_strokes` | `true` | — |
+| `flow_sigma_px` | 1,0 | ≥ 0 |
+| `stroke_min_coherence` | 0,5 | [0, 1] |
+| `stroke_max_angle` | 0,7 rad (≈ 40°) | (0, π/4): em π/4 as duas diagonais empatam |
+
+**Medido** (traços de 1 px pretos sobre branco, PixelSegmenter completo):
+
+| Traço | Pixels | Ligações | Regiões |
+|---|---|---|---|
+| diagonal `\` e `/` (26 px) | 26 + 25 pontes | 25 | 2 |
+| inclinação 1/3 | 36 | 12 | 2 |
+| inclinação 2/3 | 36 | 23 | 2 |
+| inclinação 3 | 34 | 11 | 2 |
+| inclinação −1/2 | 36 | 18 | 2 |
+| inclinação 1/8 | 38 | 4 | 2 |
+| círculo r = 12 | 76 | 15 | 3 (dentro, anel, fora) |
+
+Pelo motor, com o logo chapado mais o traço: 4 regiões, o traço preto e área de 29,67 px suavizada e 29,73 px em curvas (15 px de tinta + 14 pontes). A orientação de uma borda reta com AA erra no máximo 1,5° em 10 ângulos. Num disco duro, a tangente fica a ≥ 78,9° do raio, com coerência ≥ 0,80.
+
+**Desvios e limites:**
+- **Suavização.** O `ContourSmoother` não usa o campo. A mola preserva a área do traço ligado (29,67 px contra 29). Os dois lados de uma faixa de 1,4 px não se cruzam, porque o fiscal impede, e não colapsam em linha reta, porque o prior angular não encolhe uma reta. Um termo de largura guiado pelo campo só se justifica com uma falha medida, por exemplo nas fases sem fidelidade das fotos (`None`).
+- **Traço mais grosso.** A faixa ligada tem largura √2 ≈ 1,41 px, contra 0,71 px da tinta: um traço ideal de 1 px a 45° dá 1,0. Só o modelo gerador corrigiria isso.
+- **Inclinações rasas.** Um traço a menos de ≈ 5° de um eixo (α > 40° da diagonal) não é ligado. Ele vira trechos retos de comprimento ≥ 1/inclinação, que sobrevivem a `mergeSmallRegions` mas ficam separados pela quina.
+- **Teste de ponto simples conservador.** Ele é local, e às vezes recusa as duas pontes de um par na ponta de um traço.
+- **Traço com AA fraco.** Se o cinza varia mais que `mergeThreshMax` ao longo da diagonal, o traço não é ligado. Traços com AA costumam ser 4-conexos e não precisam da ligação.
+- **Fora do escopo, encontrado no caminho.** Na paleta exata, fragmentos que juntam duas cores exatas recebem, pela média, uma **terceira** cor (os pedaços vermelhos do traço preto sem ligação). Com a ligação, esse caso some, mas a regra de cor pela média continua valendo para outras fusões de cores exatas.
+
+**Testes:**
+- `flow_field_test` (14 casos):
+  - *Campo:* campo chapado, vazio e σ inválido; campo bruto igual ao tensor de Sobel e ao `EdgeImage`; integração como gaussiana normalizada (perfil exato de um degrau, raio exato, conservação da energia); centro de um traço de 1 px e identidade cos 2α = 2(t·d̂)² − 1; bordas em 10 ângulos e um disco; xadrez, cruzamento e canto.
+  - *Ligação:* traço diagonal nas duas direções, com e sem ligação; 5 inclinações e um círculo; casos que não podem ligar (desligado, coerência mínima, pontes quase da cor do traço, xadrez, quadrados pela quina, cores alternadas, escadinha de AA, ângulo máximo) e o contorno entre duas cores, que liga; paralelas ligadas ao longo e nunca através; ponte com tinta; ponte que encostaria em outra região; pontes fora da cor e contrato de `excludeFromColorStats`; validação.
+- `core_engine_test`: o traço pelo motor inteiro, com e sem ligação.
+- `parameters_test` e `parameter_filer_test`: os 4 campos novos, com impressão digital, uma linha cada no `.apf` e as regras nos dois lados dos limites.
+
+**Mutation testing** (45 defects injected one at a time, in Release):
+- **Detected on the first run (36).**
+  - *Field:* radius of 2σ, unnormalized kernel, weight with σ in place of σ², no vertical pass, integrated tensor and raw tensor without the m² unit, squared coherence, tangent equal to the normal, anisotropy without the factor 2 on Jxy, alignment with the sign flipped or without the factor 2 on sin 2ψ, infinite σ accepted, tangent without the isotropy test, magnitude of the `EdgeImage` taken from Jxx only.
+  - *Linking:* `linkStrokes` ignored, colors of p and q not compared, AA blend accepted, alignment ignored or measured against the other diagonal, maximum angle without doubling, field taken from p alone, a bridge taken from a stroke, a bridge counted in the color, `run` and the exact-palette path without linking, only one diagonal, blend without the line tolerance, field without integration, parameters not validated, link counter.
+  - *`PixelMap`:* sample carried along with an excluded pixel, exclusion without removing the sample, repeated exclusion.
+  - *`.apf`:* π/4 accepted, coherence > 1 accepted, negative σ accepted.
+- **Survivors closed by tests (5):**
+  - circular border in place of replicated: a vertical step two columns from the frame, with the exact value in column 0 and zero in the last one;
+  - contrast with the bridges ignored: bridges almost the color of the stroke, which then is already 2 px wide;
+  - coherence ignored: with a minimum of 0.95, the ends stop linking (17 links instead of 19);
+  - bridge without the clean preference: a near-white square touching the horizontal bridge of a single pair;
+  - bridge without the ink preference: the gray bridges moved to the side that the default order does not pick.
+
+  Re-run (`-Only`), all 5 were detected.
+- **Equivalent, left as is (4):**
+  - the `min(1, ·)` on the coherence and the `clamp(−1, 1)` on the alignment are guards against rounding. For a sum of outer products, xy² ≤ xx·yy (Cauchy–Schwarz), which already bounds both.
+  - the early exit "a bridge already belongs to p or to q" is implied by the contrast test (the bridge would have the stroke's own color).
+  - the minimum contrast between the bridges in the blend test: with bridges of almost the same color, t falls outside (0.02, 0.98) unless the stroke has their color, and then the contrast rejects the pair.
+
 ---
 
 ## 2. Formulação matemática

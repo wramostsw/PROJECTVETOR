@@ -17,6 +17,21 @@
 
 namespace cnx {
 
+/// Tensor de estrutura 2×2 simétrico [xx xy; xy yy].
+struct StructureTensor {
+    float xx = 0.0f;
+    float xy = 0.0f;
+    float yy = 0.0f;
+};
+
+/// Escala do Sobel inteiro: m = √(Jxx + Jyy) · kSobelScale (o 4 do núcleo e o 255 dos 8 bits).
+inline constexpr double kSobelScale = 1.0 / (4.0 * 255.0);
+
+/// Tensor de Sobel bruto por pixel, Σ_c (gx², gx·gy, gy²) sobre os 4 canais em 8 bits, bordas replicadas.
+/// Os valores são inteiros (|J| ≤ 4·1020² < 2²⁴), portanto exatos em float; multiplique por kSobelScale²
+/// para as unidades de m². Imagem vazia → array vazio.
+sla::Array2D<StructureTensor> sobelTensors(const sla::Array2D<sla::Rgba8>& image);
+
 /// Pixel de crista: máximo local da magnitude ao longo da própria normal.
 struct EdgePoint {
     int x = 0;

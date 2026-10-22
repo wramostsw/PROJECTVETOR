@@ -515,6 +515,40 @@ CNX_TEST(the_profile_chosen_by_the_classifier_drives_the_later_stages) {
     }
 }
 
+CNX_TEST(a_one_pixel_diagonal_stroke_survives_the_whole_pipeline) {
+    // Logo chapado + traço preto de 1 px em diagonal (15 px, só ligados pela quina): caminho da paleta exata.
+    Array2D<Rgba8> img = flatLogo();
+    for (int i = 0; i < 15; ++i) img(26 + i, 3 + i) = rgb(0, 0, 0);
+    const auto darkArea = [](const cnx::VectorImage& v) {
+        double area = 0.0;
+        for (cnx::FaceId f = 1; f < static_cast<cnx::FaceId>(v.faceCount()); ++f) {
+            if (v.face(f).color.r < 0.1f && v.face(f).color.b < 0.1f) area += v.face(f).area;
+        }
+        return area;
+    };
+    for (const bool link : {false, true}) {
+        Rig rig;
+        rig.loader->image = img;
+        rig.edit([&](cnx::EngineParameters& p) { p.segment.linkStrokes = link; });
+        CHECK(rig.run() == RunStatus::Completed);
+        const auto snap = rig.engine.snapshot();
+        CHECK(snap->classification->profile == cnx::ImageProfile::LogoMed && snap->palette->exact && snap->palette->colors.size() == 4);
+        const double smoothed = darkArea(*snap->smoothed);
+        const double fitted = darkArea(*snap->fitted);
+        std::printf("  traço pelo motor (ligação %s): %zu regiões, área %.2f suavizada, %.2f em curvas\n", link ? "sim" : "não",
+                    snap->segmentation->forest().rootCount(), smoothed, fitted);
+        CHECK(snap->smoothed->validate().ok && snap->fitted->validate().ok);
+        if (!link) {
+            CHECK(smoothed == 0.0);  // o traço some (seus pixels viram fragmentos de outras cores)
+        } else {
+            // Fundo, vermelho, azul e o traço preto: 15 px de tinta + 14 pontes. As pontes não entram na cor
+            // (senão a média cinza cairia no vermelho da paleta), e a suavização preserva a área (a mola).
+            CHECK(snap->segmentation->forest().rootCount() == 4 && snap->smoothed->faceCount() == 5);
+            CHECK(std::abs(smoothed - 29.0) < 3.0 && std::abs(fitted - 29.0) < 3.0);
+        }
+    }
+}
+
 CNX_TEST(manual_segmentation_edits_become_a_pseudo_parameter) {
     Rig rig;
     CHECK(rig.run() == RunStatus::Completed);

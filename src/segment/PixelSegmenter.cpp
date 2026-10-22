@@ -6,6 +6,7 @@
 #include <cmath>
 #include <cstddef>
 #include <limits>
+#include <numbers>
 #include <stdexcept>
 #include <utility>
 
@@ -20,6 +21,12 @@ constexpr std::size_t ux(std::int32_t i) noexcept { return static_cast<std::size
 
 constexpr std::array<int, 4> kDx4{1, 0, -1, 0};
 constexpr std::array<int, 4> kDy4{0, 1, 0, -1};
+
+void validateStrokeParams(const SegmentParams& p) {
+    if (!(p.flowSigmaPx >= 0.0) || !std::isfinite(p.flowSigmaPx)) throw std::invalid_argument("PixelSegmenter: flowSigmaPx < 0 ou não finito");
+    if (!(p.strokeMinCoherence >= 0.0 && p.strokeMinCoherence <= 1.0)) throw std::invalid_argument("PixelSegmenter: strokeMinCoherence fora de [0, 1]");
+    if (!(p.strokeMaxAngle > 0.0 && p.strokeMaxAngle < std::numbers::pi / 4.0)) throw std::invalid_argument("PixelSegmenter: strokeMaxAngle fora de (0, π/4)");
+}
 
 }  // namespace
 
@@ -53,12 +60,14 @@ void snapColorsToPalette(PixelMap& map, const Palette& palette) {
 PixelSegmenter::PixelSegmenter(const sla::Array2D<sla::Rgba8>& image, SegmentParams params)
     : image_(image), params_(params), map_(image.width(), image.height()) {
     (void)thresholdSchedule(params_);  // valida cedo
+    validateStrokeParams(params_);
     if (params_.quadTreeBlock < 1) throw std::invalid_argument("PixelSegmenter: quadTreeBlock < 1");
 }
 
 PixelSegmenter::PixelSegmenter(const sla::Array2D<sla::Rgba8>& image, SegmentParams params, PixelMap initial)
     : image_(image), params_(params), map_(std::move(initial)) {
     (void)thresholdSchedule(params_);
+    validateStrokeParams(params_);
     if (map_.width() != image.width() || map_.height() != image.height()) {
         throw std::invalid_argument("PixelSegmenter: mapa inicial com dimensões diferentes da imagem");
     }
@@ -318,6 +327,137 @@ int PixelSegmenter::diagonalSweep() {
     return moves;
 }
 
+// ---------------------------------------------------------------- traços finos
+
+bool PixelSegmenter::isBlend(const sla::Rgba& c, const sla::Rgba& a, const sla::Rgba& b) const {
+    // Mesmo teste de reta das praias (SubPixelSegmenter): c está no segmento a–b, longe das pontas.
+    const sla::Rgba v = b - a;
+    const double vv = sla::dot(v, v);
+    if (vv < params_.beachMinContrast) return false;
+    const double t = sla::dot(c - a, v) / vv;
+    if (!(t > 0.02 && t < 0.98)) return false;
+    const sla::Rgba off = (c - a) - v * static_cast<float>(t);
+    return std::sqrt(sla::dot(off, off)) <= params_.beachLineTolerance * std::sqrt(vv);
+}
+
+int PixelSegmenter::linkStrokeSweep() {
+    if (!initialized_) throw std::logic_error("PixelSegmenter::linkStrokeSweep: mapa não inicializado");
+    if (!params_.linkStrokes) return 0;
+    if (!flow_) flow_ = FlowField::compute(image_, params_.flowSigmaPx);
+    ensureCache();
+    const FlowField& flow = *flow_;
+    const double limit = params_.mergeThreshMax;
+    const double minAlignment = std::cos(2.0 * params_.strokeMaxAngle);
+    const int w = map_.width();
+    const int h = map_.height();
+    RegionForest& forest = map_.forest();
+
+    // O par p = (x, y), q = (x + sx, y + 1) é de traço? Devolve as regiões e a cor do traço para a ligação.
+    struct Pair {
+        RegionId rp, rq, r0, r1;
+        sla::Rgba stroke;
+    };
+    const auto strokePair = [&](int x, int y, int sx) -> std::optional<Pair> {
+        const int qx = x + sx;
+        const int qy = y + 1;
+        if (qx < 0 || qx >= w || qy >= h) return std::nullopt;
+        const RegionId rp = map_.regionAt(x, y);
+        const RegionId rq = map_.regionAt(qx, qy);
+        if (rp == rq) return std::nullopt;
+        // Pontes: os dois 4-vizinhos comuns a p e q. Se uma delas já é de p ou de q, os dois já se tocam.
+        const RegionId r0 = map_.regionAt(qx, y);
+        const RegionId r1 = map_.regionAt(x, qy);
+        if (r0 == rp || r0 == rq || r1 == rp || r1 == rq) return std::nullopt;
+        const sla::Rgba cp = colorOf(rp);
+        const sla::Rgba cq = colorOf(rq);
+        if (sla::distance2(cp, cq) > limit) return std::nullopt;
+        const sla::Rgba c0 = colorOf(r0);
+        const sla::Rgba c1 = colorOf(r1);
+        if (std::min({sla::distance2(cp, c0), sla::distance2(cq, c0), sla::distance2(cp, c1), sla::distance2(cq, c1)}) <= limit) return std::nullopt;
+        const sla::Rgba stroke = (cp + cq) * 0.5f;
+        if (isBlend(stroke, c0, c1)) return std::nullopt;
+        // O campo do par: a soma dos dois tensores. Na ponta de um traço o pixel extremo é quase isotrópico
+        // (coerência ≈ 0,5), mas o vizinho firma a direção; num canto, os dois são isotrópicos e a soma também.
+        const StructureTensor& tp = flow.tensor(x, y);
+        const StructureTensor& tq = flow.tensor(qx, qy);
+        const StructureTensor t{tp.xx + tq.xx, tp.xy + tq.xy, tp.yy + tq.yy};
+        if (FlowField::coherenceOf(t) < params_.strokeMinCoherence) return std::nullopt;
+        if (FlowField::alignmentOf(t, {static_cast<double>(sx), 1.0}) < minAlignment) return std::nullopt;
+        return Pair{rp, rq, r0, r1, stroke};
+    };
+
+    // 1ª passada: marca os pixels de traço. Uma ponte nunca sai de um traço — entre dois traços paralelos a
+    // 1 px, a fileira do meio também "parece" traço, e ligá-la cortaria os vizinhos (as três cadeias não
+    // cabem juntas em 4-conectividade; ficam as duas que têm uma ponte livre).
+    sla::Array2D<std::uint8_t> onStroke(w, h, 0);
+    for (int y = 0; y + 1 < h; ++y) {
+        for (int x = 0; x < w; ++x) {
+            for (const int sx : {1, -1}) {
+                if (!strokePair(x, y, sx)) continue;
+                onStroke(x, y) = 1;
+                onStroke(x + sx, y + 1) = 1;
+            }
+        }
+    }
+
+    // 2ª passada: liga, reavaliando cada par no estado atual do mapa.
+    int links = 0;
+    for (int y = 0; y + 1 < h; ++y) {
+        for (int x = 0; x < w; ++x) {
+            for (const int sx : {1, -1}) {
+                const std::optional<Pair> pair = strokePair(x, y, sx);
+                if (!pair) continue;
+                const int qx = x + sx;
+                const int qy = y + 1;
+                const RegionId rp = pair->rp;
+                const RegionId rq = pair->rq;
+                const RegionId r0 = pair->r0;
+                const RegionId r1 = pair->r1;
+                const sla::Rgba stroke = pair->stroke;
+                const std::array<std::array<int, 2>, 2> bridge{{{qx, y}, {x, qy}}};
+
+                // Ponte preferida: a que não cria contatos novos (os outros dois 4-vizinhos são da região dela ou
+                // estão fora da imagem), depois a de cor mais próxima do traço, depois a horizontal.
+                std::array<std::size_t, 2> order{0, 1};
+                std::array<int, 2> clean{};
+                std::array<double, 2> dist{};
+                for (std::size_t k = 0; k < 2; ++k) {
+                    const int bx = bridge[k][0];
+                    const int by = bridge[k][1];
+                    const RegionId rb = k == 0 ? r0 : r1;
+                    for (std::size_t n = 0; n < 4; ++n) {
+                        const int nx = bx + kDx4[n];
+                        const int ny = by + kDy4[n];
+                        if ((nx == x && ny == y) || (nx == qx && ny == qy)) continue;
+                        if (nx < 0 || ny < 0 || nx >= w || ny >= h || map_.regionAt(nx, ny) == rb) ++clean[k];
+                    }
+                    dist[k] = sla::distance2(sla::toRgba(image_(bx, by)), stroke);
+                }
+                if (clean[1] > clean[0] || (clean[1] == clean[0] && dist[1] < dist[0])) order = {1, 0};
+
+                bool moved = false;
+                for (const std::size_t k : order) {
+                    const int bx = bridge[k][0];
+                    const int by = bridge[k][1];
+                    if (onStroke(bx, by)) continue;
+                    if (map_.tryMovePixel(bx, by, rp, image_(bx, by))) {
+                        (void)map_.excludeFromColorStats(bx, by, image_(bx, by));  // a ponte não puxa a cor do traço
+                        markDirty(k == 0 ? r0 : r1);
+                        markDirty(rp);
+                        moved = true;
+                        break;
+                    }
+                }
+                if (!moved) continue;
+                markDirty(forest.unite(rp, rq));
+                ++links;
+            }
+        }
+    }
+    stats_.strokeLinks += links;
+    return links;
+}
+
 // ---------------------------------------------------------------- enforceMinNumPixels
 
 int PixelSegmenter::mergeSmallRegions() {
@@ -385,14 +525,16 @@ SegmentationResult PixelSegmenter::run(TaskContext ctx, const Palette* palette) 
         stable = j == 0 && s == 0;
     }
     bool settled = stable;
-    // Regiões minúsculas e selas se influenciam: alterna até nenhuma das duas mudar.
+    // Traços finos, regiões minúsculas e selas se influenciam: alterna até nenhum dos três mudar. A ligação
+    // vem antes da fusão das minúsculas, que apagaria os pixels de um traço diagonal um a um.
     ctx.checkpoint(static_cast<double>(schedule.size()) / total);
     bool diagonalDone = false;
     for (int k = 0; k < params_.finalSweepCap && !diagonalDone; ++k) {
         ctx.throwIfCancelled();
+        const int l = linkStrokeSweep();
         const int m = mergeSmallRegions();
         const int d = diagonalSweep();
-        diagonalDone = m == 0 && d == 0;
+        diagonalDone = l == 0 && m == 0 && d == 0;
     }
     // Trocas e diagonais podem deixar um mapa com selas só por falta de movimento simples: isso
     // não é falha de convergência; stable só cai se o laço acima acabou pelo teto.

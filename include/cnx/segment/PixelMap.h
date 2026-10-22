@@ -206,6 +206,14 @@ public:
     /// não exige que `to` seja vizinha, e a região de origem pode ficar vazia.
     bool reassignPixel(int x, int y, RegionId to, sla::Rgba8 color);
 
+    /// Tira o pixel das estatísticas de cor (MedianAccumulator) da sua região: ele continua nela para a
+    /// topologia (contagem, contatos, ponto simples), e ao ser movido depois nenhuma amostra o acompanha.
+    /// É a ponte de um traço fino diagonal (PixelSegmenter::linkStrokeSweep): um pixel de fundo que só existe
+    /// para dar 4-conexidade ao traço e não deve puxar a cor dele. `color` deve ser a cor usada no setLabel.
+    /// Retorna false, sem efeito, se o pixel já estava excluído. Lança std::logic_error se não tem região.
+    bool excludeFromColorStats(int x, int y, sla::Rgba8 color);
+    bool isExcludedFromColorStats(int x, int y) const noexcept { return !noStats_.empty() && noStats_(x, y) != 0; }
+
     /// Teste de ponto simples, O(1) (Rosenfeld 1970; Yokoi et al. 1975).
     /// Com R = região de p em 4-conectividade e R̄ em 8-conectividade (fora da imagem ∈ R̄):
     ///   p é simples  ⇔  T4(p, R) = 1 ∧ T8(p, R̄) = 1.
@@ -238,6 +246,7 @@ private:
 
     sla::Array2D<RegionId> labels_;
     RegionForest forest_;
+    sla::Array2D<std::uint8_t> noStats_;  ///< 1 = pixel fora das estatísticas de cor; vazio até a primeira exclusão
     bool compact_ = false;
 };
 

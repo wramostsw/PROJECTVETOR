@@ -42,6 +42,7 @@ Fingerprint SegmentParams::fingerprint(Fingerprint upstream) const {
     Fingerprint f;
     f.add(std::string_view("segment")).add(quadTreeBlock).add(quadTreeVariance).add(mergeThreshStart).add(mergeThreshGrowth).add(mergeThreshMax);
     f.add(minRegionPixels).add(whatIfFactor).add(finalSweepCap);
+    f.add(static_cast<int>(linkStrokes)).add(flowSigmaPx).add(strokeMinCoherence).add(strokeMaxAngle);
     f.add(microRegionMaxPixels).add(beachLineTolerance).add(beachMinContrast).add(beachNeighborShare);
     f.add(shadowVariance).add(shadowSmoothRatio).add(shadowMinPixels).add(shadowBlurRadius);
     return f.add(upstream);

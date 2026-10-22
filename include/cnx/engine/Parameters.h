@@ -101,6 +101,14 @@ struct SegmentParams {
     double whatIfFactor = 1.0;
     int finalSweepCap = 8;       ///< varreduras extras de juntar/trocar/diagonal no limiar máximo (convergência)
 
+    // ---- traços finos (FlowField, docs §1.20) — todos a calibrar ----
+    /// Liga pares diagonais de mesma cor ao longo do campo de orientação, antes de enforceMinNumPixels: um traço
+    /// de 1 px em diagonal é uma cadeia de pixels que só se tocam pela quina e, em 4-conectividade, sumiria.
+    bool linkStrokes = true;
+    double flowSigmaPx = 1.0;         ///< σ da integração do tensor de estrutura (px), ≥ 0
+    double strokeMinCoherence = 0.5;  ///< coerência mínima do campo nos dois pixels do par, ∈ [0, 1]
+    double strokeMaxAngle = 0.7;      ///< ângulo máximo (rad) entre a tangente do campo e a diagonal do par, ∈ (0, π/4)
+
     // ---- SubPixelSegmenter (§4, regiões com antialiasing) — todos a calibrar ----
     int microRegionMaxPixels = 2;      ///< limpa regiões de 1 px, depois 2 px… até este tamanho
     double beachLineTolerance = 0.25;  ///< praia: distância da cor à reta A–B ≤ tolerância · ‖cor_B − cor_A‖

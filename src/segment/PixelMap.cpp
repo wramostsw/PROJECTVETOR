@@ -458,10 +458,11 @@ void PixelMap::moveUnchecked(int x, int y, RegionId from, RegionId target, sla::
         if (q != from) forest_.removeContacts(from, q, 1);
         if (q != target) forest_.addContacts(target, q, 1);
     }
-    forest_.stats(from).samples.remove(color);
+    const bool sampled = !isExcludedFromColorStats(x, y);
+    if (sampled) forest_.stats(from).samples.remove(color);
     --forest_.size_[ux(from)];
     RegionStats& t = forest_.stats(target);
-    t.samples.add(color);
+    if (sampled) t.samples.add(color);
     t.minX = std::min(t.minX, x);
     t.minY = std::min(t.minY, y);
     t.maxX = std::max(t.maxX, x);
@@ -485,6 +486,17 @@ bool PixelMap::reassignPixel(int x, int y, RegionId to, sla::Rgba8 color) {
         if (labels_.inBounds(qx, qy)) around[d] = regionAt(qx, qy);
     }
     moveUnchecked(x, y, from, target, color, around);
+    return true;
+}
+
+bool PixelMap::excludeFromColorStats(int x, int y, sla::Rgba8 color) {
+    if (!labels_.inBounds(x, y)) throw std::out_of_range("PixelMap::excludeFromColorStats: pixel fora da imagem");
+    const RegionId r = regionAt(x, y);
+    if (r == kNoRegion) throw std::logic_error("PixelMap::excludeFromColorStats: pixel sem região");
+    if (isExcludedFromColorStats(x, y)) return false;
+    if (noStats_.empty()) noStats_ = sla::Array2D<std::uint8_t>(width(), height(), 0);
+    forest_.stats(r).samples.remove(color);
+    noStats_(x, y) = 1;
     return true;
 }
 
