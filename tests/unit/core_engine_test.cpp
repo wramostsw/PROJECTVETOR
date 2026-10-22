@@ -519,13 +519,16 @@ CNX_TEST(a_one_pixel_diagonal_stroke_survives_the_whole_pipeline) {
     // Logo chapado + traço preto de 1 px em diagonal (15 px, só ligados pela quina): caminho da paleta exata.
     Array2D<Rgba8> img = flatLogo();
     for (int i = 0; i < 15; ++i) img(26 + i, 3 + i) = rgb(0, 0, 0);
-    const auto darkArea = [](const cnx::VectorImage& v) {
+    const auto areaOf = [](const cnx::VectorImage& v, auto&& isColor) {
         double area = 0.0;
         for (cnx::FaceId f = 1; f < static_cast<cnx::FaceId>(v.faceCount()); ++f) {
-            if (v.face(f).color.r < 0.1f && v.face(f).color.b < 0.1f) area += v.face(f).area;
+            if (isColor(v.face(f).color)) area += v.face(f).area;
         }
         return area;
     };
+    const auto darkArea = [&](const cnx::VectorImage& v) { return areaOf(v, [](const sla::Rgba& c) { return c.r < 0.1f && c.b < 0.1f; }); };
+    // O vermelho é só o retângulo (19 × 14 = 266 px): nenhum fragmento preto + branco pode virar vermelho.
+    const auto redArea = [&](const cnx::VectorImage& v) { return areaOf(v, [](const sla::Rgba& c) { return c.r > 0.5f && c.b < 0.5f; }); };
     for (const bool link : {false, true}) {
         Rig rig;
         rig.loader->image = img;
@@ -538,8 +541,10 @@ CNX_TEST(a_one_pixel_diagonal_stroke_survives_the_whole_pipeline) {
         std::printf("  traço pelo motor (ligação %s): %zu regiões, área %.2f suavizada, %.2f em curvas\n", link ? "sim" : "não",
                     snap->segmentation->forest().rootCount(), smoothed, fitted);
         CHECK(snap->smoothed->validate().ok && snap->fitted->validate().ok);
+        CHECK(std::abs(redArea(*snap->smoothed) - 266.0) < 1.0);
         if (!link) {
-            CHECK(smoothed == 0.0);  // o traço some (seus pixels viram fragmentos de outras cores)
+            // O traço se desfaz: sobram fragmentos, cada um com a cor da maioria dos seus pixels (preto ou branco).
+            CHECK(snap->segmentation->forest().rootCount() > 4 && smoothed < 15.0);
         } else {
             // Fundo, vermelho, azul e o traço preto: 15 px de tinta + 14 pontes. As pontes não entram na cor
             // (senão a média cinza cairia no vermelho da paleta), e a suavização preserva a área (a mola).

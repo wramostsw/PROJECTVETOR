@@ -55,6 +55,62 @@ void snapColorsToPalette(PixelMap& map, const Palette& palette) {
     }
 }
 
+void snapColorsToExactPalette(PixelMap& map, const sla::Array2D<sla::Rgba8>& image, const Palette& palette) {
+    if (palette.colors.empty()) throw std::invalid_argument("snapColorsToExactPalette: paleta vazia");
+    if (image.width() != map.width() || image.height() != map.height()) {
+        throw std::invalid_argument("snapColorsToExactPalette: imagem com dimensões diferentes do mapa");
+    }
+    const std::size_t k = palette.colors.size();
+    const auto nearest = [&](const sla::Rgba& c) {
+        std::size_t best = 0;
+        double bestD = sla::distance2(c, palette.colors[0]);
+        for (std::size_t i = 1; i < k; ++i) {
+            const double d = sla::distance2(c, palette.colors[i]);
+            if (d < bestD) {
+                bestD = d;
+                best = i;
+            }
+        }
+        return best;
+    };
+    // Votos por raiz (slots densos: memória O(regiões·K)); os pixels excluídos votam à parte, como reserva.
+    RegionForest& forest = map.forest();
+    std::vector<std::int32_t> slot(forest.capacity(), -1);
+    std::vector<RegionId> roots;
+    std::vector<std::uint32_t> votes;
+    std::vector<std::uint32_t> reserve;
+    for (int y = 0; y < map.height(); ++y) {
+        for (int x = 0; x < map.width(); ++x) {
+            const RegionId r = map.regionAt(x, y);
+            if (r == kNoRegion) continue;
+            if (slot[ux(r)] < 0) {
+                slot[ux(r)] = static_cast<std::int32_t>(roots.size());
+                roots.push_back(r);
+                votes.resize(votes.size() + k, 0);
+                reserve.resize(reserve.size() + k, 0);
+            }
+            const std::size_t base = static_cast<std::size_t>(slot[ux(r)]) * k;
+            ++(map.isExcludedFromColorStats(x, y) ? reserve : votes)[base + nearest(sla::toRgba(image(x, y)))];
+        }
+    }
+    for (std::size_t n = 0; n < roots.size(); ++n) {
+        RegionStats& s = forest.stats(roots[n]);
+        const std::size_t base = n * k;
+        const bool any = std::any_of(votes.begin() + static_cast<std::ptrdiff_t>(base), votes.begin() + static_cast<std::ptrdiff_t>(base + k),
+                                     [](std::uint32_t v) { return v > 0; });
+        const std::vector<std::uint32_t>& ballot = any ? votes : reserve;
+        const sla::Rgba mean = s.samples.mean();
+        std::size_t best = 0;
+        for (std::size_t i = 1; i < k; ++i) {
+            const std::uint32_t vi = ballot[base + i];
+            const std::uint32_t vb = ballot[base + best];
+            if (vi > vb || (vi == vb && sla::distance2(mean, palette.colors[i]) < sla::distance2(mean, palette.colors[best]))) best = i;
+        }
+        s.paletteIndex = static_cast<std::int32_t>(best);
+        s.color = palette.colors[best];
+    }
+}
+
 // ---------------------------------------------------------------- construção
 
 PixelSegmenter::PixelSegmenter(const sla::Array2D<sla::Rgba8>& image, SegmentParams params)
@@ -499,7 +555,13 @@ int PixelSegmenter::mergeSmallRegions() {
 PixelMap PixelSegmenter::finish(const Palette* palette) {
     if (!initialized_) throw std::logic_error("PixelSegmenter::finish: mapa não inicializado");
     map_.assignMedianColors(kMeanFallbackBelow);
-    if (palette != nullptr) snapColorsToPalette(map_, *palette);
+    if (palette != nullptr) {
+        if (palette->exact) {
+            snapColorsToExactPalette(map_, image_, *palette);
+        } else {
+            snapColorsToPalette(map_, *palette);
+        }
+    }
     stats_.finalRegions = static_cast<int>(map_.compact());
     return std::move(map_);
 }

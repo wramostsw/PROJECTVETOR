@@ -735,6 +735,154 @@ CNX_TEST(pipeline_snaps_to_the_palette_and_honors_cancellation) {
                  (void)cancelled.run(cnx::TaskContext(source.get_token(), nullptr, cnx::ProgressRange{})));
 }
 
+namespace {
+
+/// Uma região só com os pixels dados (em linha, 1 × n), na ordem.
+PixelMap rowRegion(const std::vector<Rgba8>& pixels, Array2D<Rgba8>& image) {
+    const int n = static_cast<int>(pixels.size());
+    image = Array2D<Rgba8>(n, 1);
+    PixelMap map(n, 1);
+    const RegionId r = map.createRegion();
+    for (int x = 0; x < n; ++x) {
+        image(x, 0) = pixels[static_cast<std::size_t>(x)];
+        map.setLabel(x, 0, r, image(x, 0));
+    }
+    return map;
+}
+
+cnx::Palette paletteOf(std::initializer_list<sla::Rgba> colors) {
+    cnx::Palette p;
+    p.colors = colors;
+    p.exact = true;
+    return p;
+}
+
+}  // namespace
+
+CNX_TEST(exact_palette_colors_come_from_the_pixels_not_from_the_mean) {
+    const sla::Rgba white = sla::toRgba(kWhite);
+    const sla::Rgba black = sla::toRgba(kBlack);
+    const sla::Rgba red{0.86f, 0.12f, 0.12f, 1.0f};
+    const cnx::Palette bwr = paletteOf({white, black, red});
+    Array2D<Rgba8> img;
+    // 2 pretos + 2 brancos: média cinza 0,5, cuja cor de paleta mais próxima é o VERMELHO (0,42 contra 0,75).
+    {
+        PixelMap m = rowRegion({kBlack, kWhite, kBlack, kWhite}, img);
+        cnx::snapColorsToPalette(m, bwr);
+        CHECK(m.forest().stats(0).color == red);  // a regra da média: uma terceira cor
+        cnx::snapColorsToExactPalette(m, img, bwr);
+        CHECK(m.forest().stats(0).color == white && m.forest().stats(0).paletteIndex == 0);  // empate exato → menor índice
+    }
+    // Maioria.
+    {
+        PixelMap m = rowRegion({kBlack, kWhite, kBlack, kBlack}, img);
+        cnx::snapColorsToExactPalette(m, img, bwr);
+        CHECK(m.forest().stats(0).color == black && m.forest().stats(0).paletteIndex == 1);
+        PixelMap n = rowRegion({kWhite, kBlack, kWhite, kWhite, kBlack}, img);
+        cnx::snapColorsToExactPalette(n, img, bwr);
+        CHECK(n.forest().stats(0).color == white);
+    }
+    // Cada pixel vota na cor de paleta mais próxima da sua (pixels que não são exatamente da paleta).
+    {
+        PixelMap m = rowRegion({Rgba8{30, 10, 10, 255}, Rgba8{230, 40, 30, 255}, Rgba8{200, 20, 20, 255}}, img);
+        cnx::snapColorsToExactPalette(m, img, bwr);
+        CHECK(m.forest().stats(0).color == red);  // 2 votos vermelhos, 1 preto
+    }
+    // Empate decidido pela média: avermelhado e azul, 1 voto cada; a média (115, 30, 125) fica mais perto do azul.
+    {
+        const sla::Rgba blue{0.12f, 0.12f, 0.86f, 1.0f};
+        PixelMap m = rowRegion({Rgba8{200, 30, 30, 255}, Rgba8{30, 30, 220, 255}}, img);
+        cnx::snapColorsToExactPalette(m, img, paletteOf({red, blue}));
+        CHECK(m.forest().stats(0).color == blue && m.forest().stats(0).paletteIndex == 1);
+    }
+    // Pixels fora das estatísticas de cor (pontes) não votam; uma região só de pontes vota com elas.
+    {
+        PixelMap m = rowRegion({kBlack, kWhite, kWhite}, img);
+        CHECK(m.excludeFromColorStats(1, 0, kWhite) && m.excludeFromColorStats(2, 0, kWhite));
+        cnx::snapColorsToExactPalette(m, img, bwr);
+        CHECK(m.forest().stats(0).color == black);
+        PixelMap all = rowRegion({kWhite, kWhite, kBlack}, img);
+        for (int x = 0; x < 3; ++x) CHECK(all.excludeFromColorStats(x, 0, img(x, 0)));
+        cnx::snapColorsToExactPalette(all, img, bwr);
+        CHECK(all.forest().stats(0).color == white);
+    }
+    // Validação.
+    {
+        PixelMap m = rowRegion({kBlack, kWhite}, img);
+        CHECK_THROWS(std::invalid_argument, cnx::snapColorsToExactPalette(m, img, cnx::Palette{}));
+        CHECK_THROWS(std::invalid_argument, cnx::snapColorsToExactPalette(m, Array2D<Rgba8>(3, 1), bwr));
+    }
+}
+
+CNX_TEST(exact_palette_colors_are_the_plurality_after_random_merges) {
+    SplitMix64 rng{4711};
+    // 16 cores exatas ({0, 255}⁴); regiões de blocos 3×3 fundidas ao acaso juntam várias delas.
+    std::vector<sla::Rgba> colors;
+    for (int c = 0; c < 16; ++c) {
+        colors.push_back(sla::toRgba(Rgba8{static_cast<std::uint8_t>(c & 1 ? 255 : 0), static_cast<std::uint8_t>(c & 2 ? 255 : 0),
+                                           static_cast<std::uint8_t>(c & 4 ? 255 : 0), static_cast<std::uint8_t>(c & 8 ? 255 : 0)}));
+    }
+    cnx::Palette palette;
+    palette.colors = colors;
+    palette.exact = true;
+    int mixed = 0;
+    int meanWouldInvent = 0;
+    for (int round = 0; round < 20; ++round) {
+        cnxtest::Scene s = cnxtest::blockScene(30, 24, 3, rng, 2);
+        cnxtest::randomMerges(s.map, 40, rng);
+        PixelSegmenter seg(s.image, SegmentParams{}, std::move(s.map));
+        PixelMap m = seg.finish(&palette);
+        // Conferência independente: a maioria por região, contada aqui.
+        std::map<RegionId, std::array<int, 16>> count;
+        std::map<RegionId, std::array<double, 4>> sum;
+        for (int y = 0; y < 24; ++y) {
+            for (int x = 0; x < 30; ++x) {
+                const Rgba8 p = s.image(x, y);
+                const int c = (p.r ? 1 : 0) | (p.g ? 2 : 0) | (p.b ? 4 : 0) | (p.a ? 8 : 0);
+                ++count[m.compactLabels()(x, y)][static_cast<std::size_t>(c)];
+                auto& acc = sum[m.compactLabels()(x, y)];
+                acc[0] += p.r / 255.0;
+                acc[1] += p.g / 255.0;
+                acc[2] += p.b / 255.0;
+                acc[3] += p.a / 255.0;
+            }
+        }
+        for (const auto& [r, votes] : count) {
+            const int top = *std::max_element(votes.begin(), votes.end());
+            const std::int32_t k = m.forest().stats(r).paletteIndex;
+            CHECK(k >= 0 && k < 16 && votes[static_cast<std::size_t>(k)] == top);
+            CHECK(m.regionColor(r) == colors[static_cast<std::size_t>(k)]);
+            const int kinds = static_cast<int>(std::count_if(votes.begin(), votes.end(), [](int v) { return v > 0; }));
+            mixed += kinds > 1 ? 1 : 0;
+            // A regra da média, para comparar: quantas regiões ela pintaria com uma cor que nenhum pixel tem.
+            const int n = static_cast<int>(m.forest().pixelCount(r));
+            const auto& a = sum[r];
+            const sla::Rgba mean{static_cast<float>(a[0] / n), static_cast<float>(a[1] / n), static_cast<float>(a[2] / n), static_cast<float>(a[3] / n)};
+            std::size_t byMean = 0;
+            for (std::size_t i = 1; i < 16; ++i) {
+                if (sla::distance2(mean, colors[i]) < sla::distance2(mean, colors[byMean])) byMean = i;
+            }
+            meanWouldInvent += votes[byMean] == 0 ? 1 : 0;
+        }
+    }
+    std::printf("  paleta exata: %d regiões mistas; a média inventaria a cor de %d\n", mixed, meanWouldInvent);
+    CHECK(mixed > 50 && meanWouldInvent > 0);
+}
+
+CNX_TEST(finish_uses_the_plurality_only_for_an_exact_palette) {
+    Array2D<Rgba8> img;
+    PixelMap a = rowRegion({kBlack, kWhite, kBlack, kWhite}, img);
+    PixelMap b = rowRegion({kBlack, kWhite, kBlack, kWhite}, img);
+    cnx::Palette p = paletteOf({sla::toRgba(kWhite), sla::toRgba(kBlack), sla::Rgba{0.86f, 0.12f, 0.12f, 1.0f}});
+    PixelSegmenter exact(img, SegmentParams{}, std::move(a));
+    const PixelMap ea = exact.finish(&p);
+    CHECK(ea.regionColor(0) == sla::toRgba(kWhite));
+    p.exact = false;  // paleta de k-means: a média (o passo de atribuição do k-means, §4)
+    PixelSegmenter kmeans(img, SegmentParams{}, std::move(b));
+    const PixelMap eb = kmeans.finish(&p);
+    CHECK(eb.regionColor(0) == p.colors[2]);
+}
+
 CNX_TEST(pipeline_timing_report) {
     SplitMix64 rng{112};
     const Logo logo = makeLogo(640, 480, 2, rng);

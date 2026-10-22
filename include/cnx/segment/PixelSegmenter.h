@@ -51,6 +51,15 @@ struct SegmentationResult {
 /// a paleta for vazia. Pode ser chamada antes ou depois de compact().
 void snapColorsToPalette(PixelMap& map, const Palette& palette);
 
+/// Modo paleta exata (docs §1.21): cada raiz recebe a cor da paleta que a maioria dos seus pixels tem (cada
+/// pixel vota na cor da paleta mais próxima da sua, a mesma regra que montou o mapa inicial). A média não
+/// serve aqui: um fragmento que junta preto e branco tem média cinza, e a cor da paleta mais próxima do cinza
+/// pode ser uma terceira cor que nenhum pixel dele tem. Pixels fora das estatísticas de cor (pontes de traço)
+/// não votam, a menos que a região não tenha outros. Empate → a empatada mais próxima da média, depois o menor
+/// índice. A cor escolhida é sempre a de pelo menos um pixel da região. Lança std::invalid_argument se a
+/// paleta for vazia ou `image` não tiver as dimensões do mapa.
+void snapColorsToExactPalette(PixelMap& map, const sla::Array2D<sla::Rgba8>& image, const Palette& palette);
+
 class PixelSegmenter {
 public:
     /// Mapa inicial pela QuadTree (chame initializeFromQuadTree()). `image` deve sobreviver ao objeto.
@@ -95,8 +104,9 @@ public:
     /// das amostras da região. Deve valer entre estágios; usado pelos testes.
     bool colorCacheConsistent() const;
 
-    /// Atribui cores (mediana, ou paleta), compacta e devolve o mapa. Consome o mapa interno: depois
-    /// disso o segmentador não deve mais ser usado.
+    /// Atribui cores (mediana, ou paleta: snapColorsToExactPalette se palette->exact, senão
+    /// snapColorsToPalette), compacta e devolve o mapa. Consome o mapa interno: depois disso o segmentador
+    /// não deve mais ser usado.
     PixelMap finish(const Palette* palette = nullptr);
 
     PixelMap& map() noexcept { return map_; }

@@ -852,7 +852,7 @@ Pelo motor, com o logo chapado mais o traço: 4 regiões, o traço preto e área
 - **Inclinações rasas.** Um traço a menos de ≈ 5° de um eixo (α > 40° da diagonal) não é ligado. Ele vira trechos retos de comprimento ≥ 1/inclinação, que sobrevivem a `mergeSmallRegions` mas ficam separados pela quina.
 - **Teste de ponto simples conservador.** Ele é local, e às vezes recusa as duas pontes de um par na ponta de um traço.
 - **Traço com AA fraco.** Se o cinza varia mais que `mergeThreshMax` ao longo da diagonal, o traço não é ligado. Traços com AA costumam ser 4-conexos e não precisam da ligação.
-- **Fora do escopo, encontrado no caminho.** Na paleta exata, fragmentos que juntam duas cores exatas recebem, pela média, uma **terceira** cor (os pedaços vermelhos do traço preto sem ligação). Com a ligação, esse caso some, mas a regra de cor pela média continua valendo para outras fusões de cores exatas.
+- **Encontrado no caminho.** Na paleta exata, fragmentos que juntavam duas cores exatas recebiam, pela média, uma **terceira** cor (os pedaços vermelhos do traço preto sem ligação). Isso foi corrigido na §1.21.
 
 **Testes:**
 - `flow_field_test` (14 casos):
@@ -861,24 +861,60 @@ Pelo motor, com o logo chapado mais o traço: 4 regiões, o traço preto e área
 - `core_engine_test`: o traço pelo motor inteiro, com e sem ligação.
 - `parameters_test` e `parameter_filer_test`: os 4 campos novos, com impressão digital, uma linha cada no `.apf` e as regras nos dois lados dos limites.
 
-**Mutation testing** (45 defects injected one at a time, in Release):
-- **Detected on the first run (36).**
-  - *Field:* radius of 2σ, unnormalized kernel, weight with σ in place of σ², no vertical pass, integrated tensor and raw tensor without the m² unit, squared coherence, tangent equal to the normal, anisotropy without the factor 2 on Jxy, alignment with the sign flipped or without the factor 2 on sin 2ψ, infinite σ accepted, tangent without the isotropy test, magnitude of the `EdgeImage` taken from Jxx only.
-  - *Linking:* `linkStrokes` ignored, colors of p and q not compared, AA blend accepted, alignment ignored or measured against the other diagonal, maximum angle without doubling, field taken from p alone, a bridge taken from a stroke, a bridge counted in the color, `run` and the exact-palette path without linking, only one diagonal, blend without the line tolerance, field without integration, parameters not validated, link counter.
-  - *`PixelMap`:* sample carried along with an excluded pixel, exclusion without removing the sample, repeated exclusion.
-  - *`.apf`:* π/4 accepted, coherence > 1 accepted, negative σ accepted.
-- **Survivors closed by tests (5):**
-  - circular border in place of replicated: a vertical step two columns from the frame, with the exact value in column 0 and zero in the last one;
-  - contrast with the bridges ignored: bridges almost the color of the stroke, which then is already 2 px wide;
-  - coherence ignored: with a minimum of 0.95, the ends stop linking (17 links instead of 19);
-  - bridge without the clean preference: a near-white square touching the horizontal bridge of a single pair;
-  - bridge without the ink preference: the gray bridges moved to the side that the default order does not pick.
+**Teste de mutação** (45 defeitos injetados um por vez, em Release):
+- **Detectados na primeira rodada (36).**
+  - *Campo:* raio de 2σ, núcleo não normalizado, peso com σ no lugar de σ², sem a passada vertical, tensor integrado e tensor bruto sem a unidade de m², coerência ao quadrado, tangente igual à normal, anisotropia sem o fator 2 de Jxy, alinhamento com o sinal trocado ou sem o fator 2 de sin 2ψ, σ infinito aceito, tangente sem o teste de isotropia, magnitude do `EdgeImage` só a partir de Jxx.
+  - *Ligação:* `linkStrokes` ignorado, cores de p e q não comparadas, mistura de AA aceita, alinhamento ignorado ou medido contra a outra diagonal, ângulo máximo sem dobrar, campo só de p, ponte tirada de um traço, ponte contada na cor, `run` e o caminho da paleta exata sem ligação, uma diagonal só, mistura sem a tolerância de reta, campo sem integração, parâmetros não validados, contador de ligações.
+  - *`PixelMap`:* amostra acompanhando o pixel excluído, exclusão sem tirar a amostra, exclusão repetida.
+  - *`.apf`:* π/4 aceito, coerência > 1 aceita, σ negativo aceito.
+- **Sobreviventes fechados com testes (5):**
+  - borda circular no lugar de replicada: um degrau vertical a duas colunas da moldura, com o valor exato na coluna 0 e zero na última;
+  - contraste com as pontes ignorado: pontes quase da cor do traço, que então já tem 2 px;
+  - coerência ignorada: com mínimo de 0,95, as pontas deixam de ligar (17 ligações em vez de 19);
+  - ponte sem a preferência pela limpa: um quadradinho quase branco encostado na ponte horizontal de um único par;
+  - ponte sem a preferência pela de tinta: as pontes cinza passaram para o lado que a ordem padrão não escolhe.
 
-  Re-run (`-Only`), all 5 were detected.
-- **Equivalent, left as is (4):**
-  - the `min(1, ·)` on the coherence and the `clamp(−1, 1)` on the alignment are guards against rounding. For a sum of outer products, xy² ≤ xx·yy (Cauchy–Schwarz), which already bounds both.
-  - the early exit "a bridge already belongs to p or to q" is implied by the contrast test (the bridge would have the stroke's own color).
-  - the minimum contrast between the bridges in the blend test: with bridges of almost the same color, t falls outside (0.02, 0.98) unless the stroke has their color, and then the contrast rejects the pair.
+  Reexecutados (`-Only`), os 5 foram detectados.
+- **Equivalentes, mantidos (4):**
+  - o `min(1, ·)` na coerência e o `clamp(−1, 1)` no alinhamento são proteções contra arredondamento. Numa soma de produtos externos, xy² ≤ xx·yy (Cauchy–Schwarz), o que já limita os dois.
+  - a saída antecipada "a ponte já é de p ou de q" está implicada pelo teste de contraste (a ponte teria a própria cor do traço).
+  - o contraste mínimo entre as pontes no teste de mistura: com pontes de cores quase iguais, t cai fora de (0,02; 0,98), a menos que o traço tenha a cor delas, e aí o contraste recusa o par.
+
+### 1.21 Cor das regiões no modo paleta exata
+
+**O defeito.** Na paleta exata (imagem chapada), o mapa inicial é exato: cada região é uma componente 4-conexa de uma única cor da paleta. Depois, `mergeSmallRegions` e a passada diagonal juntam fragmentos de cores diferentes. A cor final vinha de `snapColorsToPalette`, que escolhe a cor da paleta mais próxima da **média** da região: é o passo de atribuição do k-means (§4), certo para uma paleta de k-means. Para cores exatas, a média de um fragmento com 2 pixels pretos e 2 brancos é o cinza 0,5, e a cor da paleta mais próxima desse cinza era o **vermelho** (0,42 contra 0,75). O resultado era uma cor que nenhum pixel da região tem. Pelo motor, com um traço diagonal preto sem ligação, saíam 7 fragmentos vermelhos.
+
+**A regra.** `snapColorsToExactPalette` faz uma votação. Cada pixel vota na cor da paleta mais próxima da sua, a mesma regra que montou o mapa inicial, e a região recebe a cor mais votada. Os desempates, em ordem:
+1. entre as cores empatadas, a mais próxima da média;
+2. o menor índice.
+
+A cor escolhida é sempre a de pelo menos um pixel da região. Os pixels fora das estatísticas de cor (as pontes de traço, §1.20) não votam, a menos que a região só tenha pontes; aí elas votam como reserva. O custo é O(N·K), e a memória O(regiões·K), com um índice denso por raiz.
+
+`PixelSegmenter::finish` escolhe a regra pelo tipo da paleta: `palette->exact` usa a maioria, e uma paleta de k-means continua com a média. O SubPixelSegmenter (logos com AA) só recebe paletas de k-means e não muda.
+
+**Medido:**
+- Em 20 cenas de 16 cores exatas, com fusões aleatórias, havia 1370 regiões mistas.
+  - Com a regra da média, 177 delas receberiam uma cor que nenhum pixel seu tem.
+  - Com a maioria, nenhuma recebe, e a cor de cada região confere com a contagem feita à parte no teste.
+- Pelo motor, sem a ligação de traços, a área vermelha volta a ser exatamente a do retângulo (266,01 px). Os fragmentos do traço desfeito ficam pretos ou brancos, conforme a maioria dos seus pixels.
+
+**Testes** (`pixel_segmenter_test`):
+- *Casos pequenos:*
+  - 2 + 2 pixels: a média dá vermelho; a maioria dá branco, pelo empate exato e pelo menor índice;
+  - maioria preta e maioria branca;
+  - votos de pixels que não são exatamente cores da paleta;
+  - empate decidido pela média;
+  - pontes que não votam, e uma região só de pontes;
+  - validação.
+- *Propriedade:* a maioria depois de fusões aleatórias.
+- *`finish`:* maioria só para a paleta exata.
+- *`core_engine_test`:* a área vermelha igual à do retângulo, com e sem a ligação de traços.
+
+**Teste de mutação** (11 defeitos injetados um por vez, em Release): todos detectados na primeira rodada.
+- *Despacho:* `finish` sem a regra exata.
+- *Votos:* pontes votando, sem a reserva, voto sem a cor do pixel, `nearest` sem trocar o melhor.
+- *Desempates:* empate sem a média, empate exato indo para o maior índice, maioria não estrita.
+- *Resultado e validação:* cor sempre a primeira da paleta, dimensões não conferidas, paleta vazia aceita.
 
 ---
 
