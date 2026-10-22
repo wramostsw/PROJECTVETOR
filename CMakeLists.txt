@@ -50,6 +50,9 @@ target_include_directories(cnx_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 find_package(Threads REQUIRED)
 target_link_libraries(cnx_core PUBLIC Threads::Threads)
 
+add_executable(cnx_cli apps/cnx_cli.cpp)
+target_link_libraries(cnx_cli PRIVATE cnx_core)
+
 enable_testing()
 foreach(test_name header_smoke_test pixel_map_test pixel_segmenter_test vector_image_test boundary_tracer_test
                  generative_model_test energy_terms_test optimizer_test crossing_guard_test

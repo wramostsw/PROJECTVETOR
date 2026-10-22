@@ -1229,6 +1229,12 @@ O Bézier do disco passa de 0,0116 a 0,0163 (desvio radial máximo 0,09 → 0,16
   - Reexecutados com `-Only`, os seis foram detectados; a rodada final com os 20 confirmou 19 detectados.
 - **Um escapa (D12):** a distância à reta em vez do segmento (sem o `clamp`), ou seja, aceitar como mistura uma cor da paleta que está na extensão da reta além dos dois extremos. Exigiria uma sombra cujas cores passam dos extremos (um degradê de 255 a 0 entre vizinhas de cinza 100 e 200), o que não é uma cena realista; não construí o caso. É uma lacuna de cobertura, que também é uma escolha de projeto: "entre os extremos" foi o critério adotado.
 
+### 1.27 `cnx_cli`: protótipo de linha de comando
+
+`apps/cnx_cli.cpp` (alvo CMake `cnx_cli`) liga as peças existentes: `ImageFileLoader` → `CoreEngine` (as sete etapas) → `ExportOutputStage` (SVG). Não tem lógica de vetorização própria e usa os parâmetros padrão (o classificador escolhe o perfil). Uso: `cnx_cli [--perfil 0..8] [--cores N] entrada.png saida.svg`; `--perfil` força o perfil (0–2 logo com AA, 3–5 logo sem AA, 6–8 foto) e `--cores` força o número de tintas. Imprime o tempo de cada etapa, o perfil escolhido, o tamanho da paleta e o número de faces. Sem opções de perfil, de parâmetros ou de formato ainda: é para ver o motor trabalhar, não é a interface (Qt) da especificação. Teste de fumaça: o logo e a foto de `tests/data` (61×47) saem em 0,14 e 0,17 s.
+
+Primeira medida em imagem real (logo em degradê, 595×515, sem opções): o classificador escolhe o perfil 7 (foto média) e a paleta escolhe K = 3 (azul, salmão e branco), e o resultado é irreconhecível. Isso confirma, em imagem de verdade, as duas pendências já listadas: as árvores de decisão do classificador e da escolha de K ainda não foram treinadas. Com `--perfil 1 --cores 12` o logo sai como um pôster de 12 tintas, 22 faces, em 17,7 s. Duas observações: (1) o degradê vira faixas, porque o método de segmentação é por regiões chapadas, e o Vector Magic, na captura que o usuário comparou, usa o modo "Unlimited colors" (dezenas de tintas) para o mesmo logo; o nosso limite é `maxColors = 12`; (2) o `SmoothContours` domina o tempo (cresce mais que linearmente com o número de nós), e o perfil de logo com AA é cerca de 6× mais lento que o de foto nesta imagem.
+
 
 ---
 
