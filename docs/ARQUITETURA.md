@@ -552,7 +552,7 @@ O passo de Schur coincide com a solução do sistema denso (k+m)×(k+m) (testado
    - é fina: nenhum pixel é interior (todo pixel toca outra região ou a borda da imagem), ou seja, tem 1 ou 2 px de largura (uma banda larga é uma região de verdade).
 
    Cada pixel da praia vai para o lado de sua própria cor (t < ½ → A, senão B), por `tryMovePixel` em varreduras repetidas: só se movem pixels que são pontos simples da praia e vizinhos do destino, então as pontas da faixa saem primeiro e as demais viram pontas em seguida. O último pixel de uma faixa de largura 1 não é ponto simples (removê-lo apagaria a região); ele é fundido inteiro (`unite`) ao lado da sua cor. O resultado tem a fronteira no meio da transição e preserva a 4-conexidade.
-3. **Sombras** (`flagShadowSegments` e `rebuildShadowSegments`). Marca com `RegionFlag::Shadow` a região com ≥ `shadowMinPixels` pixels, variância de cor ≥ `shadowVariance` (soma dos 4 canais) e variância da imagem desfocada ≥ `shadowSmoothRatio` · variância bruta. O desfoque de caixa preserva um gradiente e elimina o ruído, então a razão separa as duas coisas: um gradiente tem razão ≈ 1 e um ruído de ±12 níveis, ≈ 0,04. A reconstrução classifica cada pixel da região pela cor de paleta mais próxima da imagem **desfocada**, extrai as componentes 4-conexas de cada cor (a maior mantém o id; as outras viram regiões novas, via `reassignPixel`) e deixa a fronteira nas faixas do gradiente. Pela imagem bruta, o ruído fragmentaria a fronteira em ilhas (testado).
+3. **Sombras** (`flagShadowSegments` e `rebuildShadowSegments`). Marca com `RegionFlag::Shadow` a região com ≥ `shadowMinPixels` pixels **interiores**, variância de cor ≥ `shadowVariance` (soma dos 4 canais) e variância da imagem desfocada ≥ `shadowSmoothRatio` · variância bruta, tudo medido só nos pixels interiores (os 4 vizinhos na região). O desfoque de caixa preserva um gradiente e elimina o ruído, então a razão separa as duas coisas: um gradiente tem razão ≈ 1 e um ruído de ±12 níveis, ≈ 0,04. A reconstrução classifica cada pixel da região pela cor da imagem **desfocada dentro da região**, entre os dois extremos da sombra (tintas das regiões vizinhas) e as cores de paleta sobre a reta entre eles; extrai as componentes 4-conexas de cada cor (a maior mantém o id; as outras viram regiões novas, via `reassignPixel`) e deixa a fronteira nas faixas do gradiente. Pela imagem bruta, o ruído fragmentaria a fronteira em ilhas (testado). Os três defeitos que esta regra tinha (pixels de borda na variância, desfoque que mistura as vizinhas e cor de paleta mais próxima em RGB, que cria uma terceira tinta) estão no §1.26.
 4. **Paleta.** `snapColorsToPalette` dá a cada região a cor da paleta mais próxima da sua média; `mergeSamePaletteNeighbors` funde vizinhas 4-adjacentes com o mesmo índice (`clusterColors`); `enforceMinNumPixels` funde as regiões com menos de `minRegionPixels` à vizinha de cor mais próxima, e a cor e o índice da vizinha prevalecem (a união pode escolher a raiz da região pequena); `compact()` renumera (`buildRegions`).
 
 **`PixelMap::reassignPixel`** (novo). Move um pixel para qualquer região, sem teste topológico, atualizando contagens, medianas, caixas e contatos com o mesmo código de `tryMovePixel` (extraído para `moveUnchecked`). Serve às reconstruções; quem o usa responde pela 4-conexidade. `SubPixelSegmenter::splitDisconnected` restaura essa garantia: divide cada região nas suas componentes (a maior mantém o id). No `run` ele é só uma verificação: os estágios acima preservam a conexidade, e o contador `splitRegions` fica em 0.
@@ -561,7 +561,7 @@ O passo de Schur coincide com a solução do sistema denso (k+m)×(k+m) (testado
 
 **Resultado medido.** Disco com antialiasing (raio 11,4, supersampling 16×16, imagem de 40×40 quantizada em 8 bits): o `PixelSegmenter` sozinho deixa 4 regiões (as duas cores e mais duas de transição, que o estágio de sombras marca). O `SubPixelSegmenter` reduz a 2 (fundo e disco), com cores exatas da paleta e 0 divergências contra "cobertura ≥ ½" (410 pixels escuros; a verdade analítica é 408,3). O mapa resultante passa em `validate()` (I1–I4) com uma face por região.
 
-**Testes** (`sub_pixel_segmenter_test`, 15): `reassignPixel` contra força bruta (tamanhos, medianas, contatos em 4 cenas com 300 reatribuições cada) e seus argumentos; micro-regiões em ordem crescente; praias de 1 e 2 pixels; quatro casos que não são praia (terceira cor, banda larga, contraste baixo, contorno repartido em três); sombra marcada só no gradiente (não no chapado nem no ruído); reconstrução em faixas, com e sem ruído; paleta, mínimo de pixels e a fronteira de exatamente 4 px; `splitDisconnected`; o disco com antialiasing; determinismo, cancelamento e validação de argumentos.
+**Testes** (`sub_pixel_segmenter_test`, 22; os 7 de sombra e franja estão no §1.26): `reassignPixel` contra força bruta (tamanhos, medianas, contatos em 4 cenas com 300 reatribuições cada) e seus argumentos; micro-regiões em ordem crescente; praias de 1 e 2 pixels; quatro casos que não são praia (terceira cor, banda larga, contraste baixo, contorno repartido em três); sombra marcada só no gradiente (não no chapado nem no ruído); reconstrução em faixas, com e sem ruído; paleta, mínimo de pixels e a fronteira de exatamente 4 px; `splitDisconnected`; o disco com antialiasing; determinismo, cancelamento e validação de argumentos.
 
 **Teste de mutação** (17 defeitos injetados um por vez, em Release):
 - **Detectados na primeira rodada (15).** Micro-regiões do maior para o menor; vizinha mais distante; pixel da praia no lado oposto; praia sem o teste de espessura, da reta A–B, da fração de contorno ou do contraste; sombra sem o teste de suavidade ou de variância; reconstrução pela imagem bruta (o teste com ruído); mínimo de pixels inclusivo (a região de exatamente 4 px); `splitDisconnected` ficando com a última componente; micro-regiões acima do tamanho da vez; paleta sem checar o índice; `reassignPixel` sem o caso "já pertence" e sem o contato do destino.
@@ -1164,6 +1164,70 @@ Nas letras, o vértice verdadeiro fica a 0,27 px do suavizado e a 0,23 px do Bé
 - `contour_smoother_test` (11): cantos sobre a escadinha (discos e anel 0; retângulos 4; triângulo 3; losango 4 a 8, porque cada ponta cega sai como 2 nós vizinhos), perfuração em qualquer fase e padrão na primeira.
 - `bezier_fitter_test` (26): sem barriga em retas longas com nós esparsos, trechos retos viram `Line`, e `BezierFitter::isStraight` testado diretamente.
 - `energy_terms_test`: além do descrito, nós coincidentes (energia e gradiente finitos) e um polígono fechado com segmento de fechamento curto (a rotação do nó inicial não muda o resultado).
+
+### 1.26 Franja de terceira cor em volta de formas com AA: a regra de sombra
+
+O §1.25 deixou como achado que a regra de sombra do `SubPixelSegmenter` cria uma franja de cor em volta de traços com AA. Aqui está a medição, a causa e a correção.
+
+**Como se mede.** Um pixel tem **franja** quando a tinta final da sua região (índice da paleta) não existe em nenhum ponto dele: o pixel de borda entre vermelho e branco só pode ser vermelho ou branco. A verdade vem da própria cena (8 × 8 pontos por pixel, `fringePixels` em `sub_pixel_segmenter_test`), sem tolerância de cor nem comparação com o rmse. A ferramenta de diagnóstico que rodou os estágios um a um sobre o pixel afetado ficou fora do repositório; o que ela mostrou está abaixo.
+
+| Cena | Antes | Depois |
+|---|---|---|
+| formas (retângulo, anel, triângulo, fio, disco) | 11 regiões, **100 pixels com franja** | **7 regiões** (as verdadeiras), **0** |
+| letras | 5 regiões, 0 | 5 regiões, 0 |
+
+**Causa, estágio a estágio**, no pixel de AA da borda do retângulo vermelho (rosa 238,148,148):
+
+1. O `PixelSegmenter` o deixa numa faixa de 33 px, com a tinta amarela (o amarelo é a cor da paleta mais próxima do rosa em RGB: distância² 16 628 contra 23 187 para o branco e 23 652 para o vermelho).
+2. As **praias** o corrigem: movem a faixa para o fundo branco (praias 14, 198 pixels movidos). Até aqui está certo.
+3. A regra de sombra então marca o **fundo branco inteiro** (4709 px) como sombra. Os pixels de AA que as praias entregaram ao fundo ficam todos na borda dele, e somados à variância do fundo chapado dão a variância de um gradiente (≥ 2e-3), que o desfoque de caixa ainda preserva.
+4. A reconstrução refaz o fundo "pela cor de paleta mais próxima da imagem desfocada". O desfoque de caixa mistura as tintas vizinhas na borda, e o rosa que sai dele volta a ser, em RGB, mais amarelo que branco: 29 regiões novas, entre elas a franja amarela do retângulo.
+
+**Três correções**, uma por defeito (`SubPixelSegmenter.cpp`):
+
+1. **Detecção só pelos pixels interiores** (os 4 vizinhos na mesma região). O pixel de borda de uma região é, por construção, a mistura com a vizinha; sozinho ele dá a um fundo chapado a variância de um gradiente. `shadowMinPixels` passa a contar só os interiores. Um gradiente verdadeiro tem interior (testado, `shadow_detection_still_flags_a_gradient_that_only_its_interior_carries`).
+2. **Desfoque restrito à região** (`maskedBlur`: a média da janela só usa pixels da própria região). O desfoque de caixa antigo misturava a tinta vizinha na borda de qualquer sombra legítima; agora o cinza de um gradiente branco–preto não recebe o vermelho que toca o pé dele.
+3. **Tintas candidatas da reconstrução** (`shadowInks`). Cada pixel era classificado pela cor de paleta mais próxima em RGB, e para um tom intermediário essa pode ser uma terceira tinta. Agora a sombra vai de uma tinta vizinha a outra:
+   - as candidatas são as tintas das regiões vizinhas;
+   - com mais de duas, fica o **par de extremos** cuja reta melhor ajusta as cores desfocadas da região (um teste mostrou o porquê: com o vermelho tocando só o pé do gradiente, o cinza do meio fica de fato mais perto do vermelho que do branco ou do preto);
+   - entram também as cores da paleta que estão **sobre a reta** entre os dois extremos, com a tolerância da praia (`beachLineTolerance`): um cinza 128 na paleta é mistura legítima de branco e preto e ganha a sua faixa;
+   - sem vizinhas (região única), vale a paleta inteira.
+
+**Efeito no rmse.** O rmse de "formas" **sobe**: suavizado 0,0341 → 0,0390 e escadinha 0,0507 → 0,0542. É a métrica que engana aqui, não a correção: a faixa amarela, errada, ficava mais perto do rosa em RGB que o branco, certo. Por forma (suavizado): anel 0,0062 → 0,0065, triângulo 0,0041 → 0,0043, fio 0,1058 → 0,1068 e disco 0,0099 → 0,0098 não mudam. O retângulo vai de 0,0678 a 0,0828, e a causa **não é a franja**:
+- as quatro bordas dele ficam a meio pixel exato, e as linhas de AA (50 % de cobertura) empatam e vão todas para fora; a escadinha sai com 31 × 23 e a forma verdadeira tem 32 × 24;
+- a **pressão do ar** (contornos com menos de 8 nós, aqui um retângulo de 4) segura a área em 713 contra os 768 verdadeiros, e a suavização só consegue deslocar o retângulo inteiro em ~0,25 px (de (9,7)–(40,30) para (9,23; 7,24)–(40,26; 30,25));
+- antes, as faixas amarelas faziam o contorno ter 12 nós e escapar da pressão do ar, o que escondia isso.
+
+O Bézier do disco passa de 0,0116 a 0,0163 (desvio radial máximo 0,09 → 0,16 px); não investiguei. O gradiente conjugado é conjunto, então remover contornos alheios muda a trajetória dos demais.
+
+**Limites e achados fora do escopo (não corrigidos)**
+- **Pressão do ar por contagem de nós.** O critério "< 8 nós" é da especificação, mas um retângulo grande de 4 nós não é uma forma pequena que possa sumir. A pressão do ar ancorada na área da escadinha viesa retângulos grandes quando a escadinha perde os pixels de AA. A correção natural é aplicá-la por tamanho (área ou perímetro) e não por nós.
+- **Empate de 50 % nas praias.** `t < ½ → A` manda todo pixel de cobertura exatamente ½ para o mesmo lado. Aqui só aparece em cenas construídas com bordas em meio pixel.
+- Os pixels de AA que não são praia (cantos, junções, fios de 1 px) ainda recebem, pelo `snapColorsToPalette`, a tinta mais próxima em RGB, que pode ser uma terceira. Medido: 0 em "formas" e "letras" depois desta correção, mas a regra continua a mesma.
+
+**Testes** (`sub_pixel_segmenter_test`, 25; `contour_quality_test`):
+- `a_flat_background_with_beach_halo_is_not_flagged_as_a_shadow`: retângulo com AA sobre branco e uma terceira tinta na paleta; depois das praias, o fundo não é sombra.
+- `antialiased_logos_come_out_without_a_third_ink_fringe`: "formas" e "letras" pelo pipeline completo, 0 pixels de franja, 7 e 5 regiões, todas conexas.
+- `a_fade_between_white_and_black_never_gets_a_band_in_a_third_ink`: gradiente com amarelo na paleta, duas faixas com a fronteira no meio.
+- `a_palette_gray_on_the_line_between_the_neighbor_inks_still_gets_its_band`: o cinza sobre a reta ganha as três faixas.
+- `the_blur_does_not_bleed_a_neighbor_ink_into_the_fade` e `the_pair_of_extremes_is_chosen_from_all_the_colors_of_the_region`: o vermelho que toca o pé ou o topo do gradiente não entra nele, em oito disposições (em cima ou embaixo, criado antes ou depois das outras regiões, espelhado ou não); a segunda usa um platô de branco puro para que o último pixel da região empate dois pares de extremos e só as demais cores desempatem.
+- `the_blur_radius_parameter_controls_the_reconstruction` (raio 2 dá uma faixa clara, raio 8 nenhuma) e `a_lone_fade_region_is_rebuilt_with_the_whole_palette` (região única, sem vizinhas).
+- `shadow_detection_counts_only_interior_pixels` (inclusive uma região que ocupa a imagem inteira, cujo anel externo não é interior) e `shadow_detection_still_flags_a_gradient_that_only_its_interior_carries` (o mínimo de pixels conta só os interiores).
+- `contour_quality_test`: o único caminho amarelo da cena "formas" é o disco.
+- Seis dos testes da primeira versão falham no código antigo (conferido); o do cinza sobre a reta passa nos dois, como esperado.
+
+**Teste de mutação** (20 defeitos injetados um por vez, em Release):
+- **Detectados na primeira rodada (13).**
+  - *Detecção:* pixels de borda na variância, interior com 3 vizinhos, mínimo de pixels sobre a região inteira.
+  - *Desfoque:* janela assimétrica, divisão por constante, reconstrução pela imagem bruta, sem a máscara da região.
+  - *Tintas:* candidatas só do par de extremos com 4 ou mais vizinhas, qualquer cor de paleta valendo, cor sobre a reta nunca valendo, tolerância dobrada, tintas das vizinhas pela cor da própria região, candidata mais distante.
+- **Sete escaparam; seis foram fechados com testes:**
+  - *Fora da imagem contando como interior (D3):* nenhuma região tocava a borda da imagem. O teste do anel externo de uma região que ocupa tudo exige raio 0, porque com raio 1 o suavizado já reprovava o anel por si só.
+  - *Par de extremos nunca escolhido (D8), ajuste do par só com a última cor (D9), cores da região fora do ajuste (D16):* a cena de um só vermelho embaixo escolhia o par certo por acaso (a ordem das vizinhas). Passou a haver oito disposições, e o platô de branco puro faz o último pixel empatar dois pares.
+  - *Sem vizinhas usando só a primeira cor (D14):* o teste da região única.
+  - *Raio do desfoque fixo (D20):* o teste do raio 2 contra 8.
+  - Reexecutados com `-Only`, os seis foram detectados; a rodada final com os 20 confirmou 19 detectados.
+- **Um escapa (D12):** a distância à reta em vez do segmento (sem o `clamp`), ou seja, aceitar como mistura uma cor da paleta que está na extensão da reta além dos dois extremos. Exigiria uma sombra cujas cores passam dos extremos (um degradê de 255 a 0 entre vizinhas de cinza 100 e 200), o que não é uma cena realista; não construí o caso. É uma lacuna de cobertura, que também é uma escolha de projeto: "entre os extremos" foi o critério adotado.
 
 
 ---

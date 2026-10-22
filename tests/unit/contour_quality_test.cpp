@@ -223,25 +223,32 @@ CNX_TEST(thin_lines_triangles_and_disks_are_not_deformed) {
     const Stages s = run(scene);
     print("formas", s);
     save(env("CNX_QUALITY_DIR"), scene, s, "");
-    // Antes: smoothed 0,1064 (o dobro da escadinha, 0,0507) e Bézier 0,1085. A segmentação deixa uma franja amarela em
-    // volta do retângulo vermelho (a cor da paleta mais próxima do rosa do antialiasing), que é o piso do erro aqui.
+    // Antes da correção da suavização: smoothed 0,1064 (o dobro da escadinha, 0,0507) e Bézier 0,1085; depois dela, 0,0341.
+    // A correção da franja (docs §1.26) tirou do mapa as faixas amarelas em volta do retângulo vermelho (o amarelo é a cor
+    // da paleta mais próxima do rosa do antialiasing), e o rmse passa a 0,0390: a faixa amarela, errada, ficava mais
+    // perto do rosa em RGB que o branco, certo, e a escadinha também piora (0,0507 → 0,0542). O piso que sobra é do
+    // retângulo, de bordas a meio pixel: a pressão do ar (contornos com < 8 nós) segura a área da escadinha (31 × 23
+    // contra 32 × 24), e a suavização só o desloca em ~0,25 px (anel, triângulo, fio e disco não mudam; docs §1.26).
     CHECK(s.smoothed.rmse < s.staircase.rmse);
-    CHECK(s.smoothed.rmse < 0.040 && s.fitted.rmse < 0.040);
+    CHECK(s.smoothed.rmse < 0.045 && s.fitted.rmse < 0.045);
     CHECK(s.smoothed.maxError < 0.55 && s.fitted.maxError < 0.55);
     CHECK(s.fitted.rmse < 1.1 * s.smoothed.rmse);
     // O fio preto de 34 × 2,4 px (antes: um quadrado de ~10 × 10 px): continua comprido e fino.
     const sla::Box2 line = faceBox(*s.snapshot->smoothed, sla::Rgba{0.08f, 0.08f, 0.08f, 1.0f});
     std::printf("  fio preto: caixa %.1f × %.1f px (verdade 34 × 2,4; a escadinha tem 34 × 3)\n", line.max.x - line.min.x, line.max.y - line.min.y);
     CHECK(line.max.x - line.min.x > 32.0 && line.max.y - line.min.y < 4.5);
-    // O disco amarelo (raio 9,3): o contorno ajustado fica a ~0,5 px do círculo verdadeiro.
-    // (os recortes amarelos em volta do retângulo vermelho também são amarelos: o disco é o anel com mais pontos.)
+    // O disco amarelo (raio 9,3): o contorno ajustado fica a ~0,5 px do círculo verdadeiro. E é o único caminho
+    // amarelo: o amarelo não é tinta de nenhuma das bordas das outras formas (a franja dos docs §1.26).
     const cnxtest::svg::Svg svg = cnxtest::svg::parseSvg(s.svgFitted);
     const cnxtest::svg::Path* disk = nullptr;
+    int yellowPaths = 0;
     for (const cnxtest::svg::Path& p : svg.paths) {
         const auto channel = [&](std::size_t at) { return std::stoi(p.fill.substr(at, 2), nullptr, 16); };
         const bool yellow = std::abs(channel(1) - 250) < 12 && std::abs(channel(3) - 190) < 12 && std::abs(channel(5) - 20) < 25;
+        yellowPaths += yellow ? 1 : 0;
         if (yellow && (disk == nullptr || p.rings[0].size() > disk->rings[0].size())) disk = &p;
     }
+    CHECK(yellowPaths == 1);
     CHECK(disk != nullptr);
     double worstRadial = 1e9;
     if (disk != nullptr) {

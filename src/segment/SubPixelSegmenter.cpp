@@ -21,7 +21,13 @@ constexpr std::array<int, 4> kDy4{0, 1, 0, -1};
 
 constexpr std::size_t ux(std::int32_t i) noexcept { return static_cast<std::size_t>(i); }
 
-/// Cor de uma região: mediana por canal (média abaixo de 3 pixels), em cache até a região mudar.
+/// Cor de uma região: mediana por canal (média abaixo de 3 pixels).
+Rgba regionColor(const RegionForest& forest, RegionId root) {
+    const MedianAccumulator& s = forest.stats(root).samples;
+    return s.count() < kMeanFallbackBelow ? s.mean() : sla::toRgba(s.median());
+}
+
+/// Cor de uma região, em cache até a região mudar.
 class ColorCache {
 public:
     explicit ColorCache(const PixelMap& map) : map_(map) {}
@@ -34,8 +40,7 @@ public:
             valid_.resize(n, 0);
         }
         if (!valid_[i]) {
-            const MedianAccumulator& s = map_.forest().stats(root).samples;
-            color_[i] = s.count() < kMeanFallbackBelow ? s.mean() : sla::toRgba(s.median());
+            color_[i] = regionColor(map_.forest(), root);
             valid_[i] = 1;
         }
         return color_[i];
@@ -70,6 +75,46 @@ RegionId closestNeighbor(RegionForest& forest, RegionId r, ColorFn&& color) {
     return best;
 }
 
+/// Raiz da região de cada pixel (índice y·w + x).
+std::vector<RegionId> rootLabels(const PixelMap& map) {
+    std::vector<RegionId> labels(static_cast<std::size_t>(map.width()) * static_cast<std::size_t>(map.height()));
+    for (int y = 0; y < map.height(); ++y) {
+        for (int x = 0; x < map.width(); ++x) labels[static_cast<std::size_t>(y) * static_cast<std::size_t>(map.width()) + static_cast<std::size_t>(x)] = map.regionAtConst(x, y);
+    }
+    return labels;
+}
+
+/// Média da imagem na janela (2·radius+1)² em torno de (x, y), só sobre os pixels da região `r`: o desfoque não
+/// mistura a tinta da região com a das vizinhas (nas bordas, uma média comum cria cores que não existem em lugar nenhum).
+Rgba maskedBlur(const sla::Array2D<sla::Rgba8>& image, const std::vector<RegionId>& labels, int x, int y, int radius, RegionId r) {
+    const int w = image.width();
+    const int h = image.height();
+    std::array<double, 4> s{};
+    double n = 0.0;
+    for (int j = std::max(0, y - radius); j <= std::min(h - 1, y + radius); ++j) {
+        for (int i = std::max(0, x - radius); i <= std::min(w - 1, x + radius); ++i) {
+            if (labels[static_cast<std::size_t>(j) * static_cast<std::size_t>(w) + static_cast<std::size_t>(i)] != r) continue;
+            const Rgba c = sla::toRgba(image(i, j));
+            s[0] += c.r;
+            s[1] += c.g;
+            s[2] += c.b;
+            s[3] += c.a;
+            n += 1.0;
+        }
+    }
+    if (n == 0.0) return sla::toRgba(image(x, y));
+    return {static_cast<float>(s[0] / n), static_cast<float>(s[1] / n), static_cast<float>(s[2] / n), static_cast<float>(s[3] / n)};
+}
+
+/// Quadrado da distância de p ao segmento a–b.
+double segmentDistance2(const Rgba& p, const Rgba& a, const Rgba& b) {
+    const Rgba v = b - a;
+    const double vv = sla::dot(v, v);
+    const double t = vv > 0.0 ? std::clamp(static_cast<double>(sla::dot(p - a, v)) / vv, 0.0, 1.0) : 0.0;
+    const Rgba off = (p - a) - v * static_cast<float>(t);
+    return sla::dot(off, off);
+}
+
 }  // namespace
 
 SubPixelSegmenter::SubPixelSegmenter(const sla::Array2D<sla::Rgba8>& image, SegmentParams params, Palette palette)
@@ -90,35 +135,50 @@ std::size_t SubPixelSegmenter::nearestPalette(const Rgba& c) const {
     return best;
 }
 
-const sla::Array2D<Rgba>& SubPixelSegmenter::blurred() const {
-    if (!blurred_.empty()) return blurred_;
-    const int w = image_.width();
-    const int h = image_.height();
-    const int r = std::max(0, params_.shadowBlurRadius);
-    const double inv = 1.0 / static_cast<double>(2 * r + 1);
-    sla::Array2D<Rgba> tmp(w, h);
-    for (int y = 0; y < h; ++y) {  // horizontal, bordas replicadas
-        for (int x = 0; x < w; ++x) {
-            std::array<double, 4> s{};
-            for (int k = -r; k <= r; ++k) {
-                const Rgba c = sla::toRgba(image_(std::clamp(x + k, 0, w - 1), y));
-                s[0] += c.r; s[1] += c.g; s[2] += c.b; s[3] += c.a;
-            }
-            tmp(x, y) = {static_cast<float>(s[0] * inv), static_cast<float>(s[1] * inv), static_cast<float>(s[2] * inv), static_cast<float>(s[3] * inv)};
-        }
+std::vector<std::size_t> SubPixelSegmenter::shadowInks(RegionForest& forest, RegionId r, const std::vector<Rgba>& colors) const {
+    // As tintas de uma região de sombra são as das regiões que ela toca: um tom intermediário entre duas delas é
+    // mistura (a sombra ou o halo de uma borda), não uma terceira tinta que por acaso fica mais perto em RGB.
+    std::vector<std::size_t> inks;
+    for (const RegionId n : forest.neighbors(r)) {
+        const std::size_t k = nearestPalette(regionColor(forest, n));
+        if (std::find(inks.begin(), inks.end(), k) == inks.end()) inks.push_back(k);
     }
-    blurred_ = sla::Array2D<Rgba>(w, h);
-    for (int y = 0; y < h; ++y) {  // vertical
-        for (int x = 0; x < w; ++x) {
-            std::array<double, 4> s{};
-            for (int k = -r; k <= r; ++k) {
-                const Rgba c = tmp(x, std::clamp(y + k, 0, h - 1));
-                s[0] += c.r; s[1] += c.g; s[2] += c.b; s[3] += c.a;
-            }
-            blurred_(x, y) = {static_cast<float>(s[0] * inv), static_cast<float>(s[1] * inv), static_cast<float>(s[2] * inv), static_cast<float>(s[3] * inv)};
-        }
+    if (inks.empty()) {  // região única: sem vizinhas para dizer quais são as tintas
+        for (std::size_t k = 0; k < palette_.colors.size(); ++k) inks.push_back(k);
+        return inks;
     }
-    return blurred_;
+    if (inks.size() < 2) return inks;
+    // Com mais de duas vizinhas, a sombra vai de uma tinta a outra: fica o par de extremos cuja reta melhor ajusta as
+    // cores da região. Sem isto, uma vizinha que só toca a borda (o vermelho debaixo de um degradê branco–preto) entra
+    // na disputa, e o cinza do meio, que de fato está mais perto do vermelho em RGB, vira uma faixa vermelha.
+    if (inks.size() > 2) {
+        double bestFit = std::numeric_limits<double>::infinity();
+        std::size_t bi = 0;
+        std::size_t bj = 1;
+        for (std::size_t i = 0; i < inks.size(); ++i) {
+            for (std::size_t j = i + 1; j < inks.size(); ++j) {
+                double fit = 0.0;
+                for (const Rgba& c : colors) fit += segmentDistance2(c, palette_.colors[inks[i]], palette_.colors[inks[j]]);
+                if (fit < bestFit) {
+                    bestFit = fit;
+                    bi = i;
+                    bj = j;
+                }
+            }
+        }
+        inks = {inks[bi], inks[bj]};
+    }
+    // Uma cor da paleta que está sobre a reta entre os dois extremos é uma mistura legítima deles (o cinza de uma
+    // sombra de preto sobre branco) e também vale; a mesma tolerância da praia (`beachLineTolerance`). Uma cor fora da
+    // reta (o amarelo entre o vermelho e o branco) é uma terceira tinta e fica de fora.
+    const Rgba& a = palette_.colors[inks[0]];
+    const Rgba& b = palette_.colors[inks[1]];
+    const double tol = params_.beachLineTolerance;
+    for (std::size_t k = 0; k < palette_.colors.size(); ++k) {
+        if (k == inks[0] || k == inks[1]) continue;
+        if (segmentDistance2(palette_.colors[k], a, b) <= tol * tol * sla::distance2(a, b)) inks.push_back(k);
+    }
+    return inks;
 }
 
 // ---------------------------------------------------------------- 1. micro-regiões
@@ -258,19 +318,32 @@ SubPixelSegmenter::BeachResult SubPixelSegmenter::splitAndMergeBeaches(PixelMap&
 
 int SubPixelSegmenter::flagShadowSegments(PixelMap& map) const {
     RegionForest& forest = map.forest();
-    const sla::Array2D<Rgba>& bl = blurred();
+    const std::vector<RegionId> labels = rootLabels(map);
+    const int w = map.width();
+    const int h = map.height();
+    const int radius = std::max(0, params_.shadowBlurRadius);
     struct Acc {
         double n = 0.0;
         std::array<double, 4> s{}, q{}, bs{}, bq{};
     };
     std::vector<Acc> acc(forest.capacity());
-    for (int y = 0; y < map.height(); ++y) {
-        for (int x = 0; x < map.width(); ++x) {
-            const RegionId r = map.regionAt(x, y);
+    const auto at = [&](int x, int y) { return static_cast<std::size_t>(y) * static_cast<std::size_t>(w) + static_cast<std::size_t>(x); };
+    for (int y = 0; y < h; ++y) {
+        for (int x = 0; x < w; ++x) {
+            const RegionId r = labels[at(x, y)];
             if (r == kNoRegion) continue;
+            // Só pixels interiores (os 4 vizinhos na mesma região): o pixel de borda de uma região é a mistura com a
+            // vizinha (o halo que as praias entregam a cada lado), e sozinho dá a um fundo chapado a variância de um gradiente.
+            bool interior = true;
+            for (std::size_t d = 0; d < 4 && interior; ++d) {
+                const int qx = x + kDx4[d];
+                const int qy = y + kDy4[d];
+                interior = qx >= 0 && qy >= 0 && qx < w && qy < h && labels[at(qx, qy)] == r;
+            }
+            if (!interior) continue;
             Acc& a = acc[ux(r)];
             const Rgba c = sla::toRgba(image_(x, y));
-            const Rgba b = bl(x, y);
+            const Rgba b = maskedBlur(image_, labels, x, y, radius, r);
             const std::array<double, 4> cv{c.r, c.g, c.b, c.a};
             const std::array<double, 4> bv{b.r, b.g, b.b, b.a};
             a.n += 1.0;
@@ -304,7 +377,10 @@ int SubPixelSegmenter::flagShadowSegments(PixelMap& map) const {
 
 int SubPixelSegmenter::rebuildShadowSegments(PixelMap& map) const {
     RegionForest& forest = map.forest();
-    const sla::Array2D<Rgba>& bl = blurred();
+    // Os pixels de uma região só mudam de dono quando a própria região é reconstruída, então o mapa de rótulos do
+    // início serve para todas.
+    const std::vector<RegionId> labels = rootLabels(map);
+    const int radius = std::max(0, params_.shadowBlurRadius);
     const std::size_t cap = forest.capacity();
     int created = 0;
     for (std::size_t i = 0; i < cap; ++i) {
@@ -319,9 +395,30 @@ int SubPixelSegmenter::rebuildShadowSegments(PixelMap& map) const {
         const int bh = st.maxY - st.minY + 1;
         const auto at = [&](int x, int y) { return static_cast<std::size_t>(y - st.minY) * static_cast<std::size_t>(bw) + static_cast<std::size_t>(x - st.minX); };
         std::vector<std::int32_t> pal(static_cast<std::size_t>(bw) * static_cast<std::size_t>(bh), -1);
+        std::vector<Rgba> blurred(pal.size());
+        std::vector<Rgba> colors;
         for (int y = st.minY; y <= st.maxY; ++y) {
             for (int x = st.minX; x <= st.maxX; ++x) {
-                if (map.regionAtConst(x, y) == r) pal[at(x, y)] = static_cast<std::int32_t>(nearestPalette(bl(x, y)));
+                if (map.regionAtConst(x, y) != r) continue;
+                blurred[at(x, y)] = maskedBlur(image_, labels, x, y, radius, r);
+                colors.push_back(blurred[at(x, y)]);
+            }
+        }
+        const std::vector<std::size_t> inks = shadowInks(forest, r, colors);
+        for (int y = st.minY; y <= st.maxY; ++y) {
+            for (int x = st.minX; x <= st.maxX; ++x) {
+                if (map.regionAtConst(x, y) != r) continue;
+                const Rgba c = blurred[at(x, y)];
+                std::size_t best = inks.front();
+                double bestD = sla::distance2(c, palette_.colors[best]);
+                for (std::size_t k = 1; k < inks.size(); ++k) {
+                    const double d = sla::distance2(c, palette_.colors[inks[k]]);
+                    if (d < bestD) {
+                        bestD = d;
+                        best = inks[k];
+                    }
+                }
+                pal[at(x, y)] = static_cast<std::int32_t>(best);
             }
         }
         // Componentes 4-conexas de mesma cor da paleta dentro da região.

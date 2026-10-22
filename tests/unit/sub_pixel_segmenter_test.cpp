@@ -12,9 +12,11 @@
 #include <string>
 #include <vector>
 
+#include "cnx/engine/Parameters.h"
 #include "cnx/segment/PixelSegmenter.h"
 #include "cnx/segment/SubPixelSegmenter.h"
 #include "cnx/vector/BoundaryTracer.h"
+#include "logo_scenes.h"
 #include "test_harness.h"
 #include "test_support.h"
 
@@ -367,6 +369,325 @@ CNX_TEST(shadow_rebuild_uses_the_blurred_image_so_noise_does_not_fragment_the_ba
     for (int y = 1; y < 6; ++y) {
         for (int x = 0; x < 24; ++x) CHECK_CTX(p.map.regionAt(x, y) == (x <= 11 ? bright : dark), std::to_string(x) + "," + std::to_string(y));
     }
+}
+
+// ================================================================ sombras ao redor de formas com AA (docs §1.26)
+
+namespace {
+
+/// Cenas de logo → imagem, paleta com as tintas exatas da cena (índice = classe de cor) e a classe de cada forma.
+struct Logo {
+    Array2D<Rgba8> image;
+    cnx::Palette palette;
+    std::vector<int> classOfShape;
+    cnxtest::LogoScene scene;
+};
+
+Logo makeLogo(const cnxtest::LogoScene& scene) {
+    Logo l{cnxtest::renderScene(scene), {}, {}, scene};
+    std::vector<Rgba8> classes{scene.background};
+    for (const cnxtest::Shape& sh : scene.shapes) {
+        std::size_t c = classes.size();
+        for (std::size_t i = 0; i < classes.size(); ++i) {
+            if (classes[i].r == sh.color.r && classes[i].g == sh.color.g && classes[i].b == sh.color.b) c = i;
+        }
+        if (c == classes.size()) classes.push_back(sh.color);
+        l.classOfShape.push_back(static_cast<int>(c));
+    }
+    for (const Rgba8 c : classes) l.palette.colors.push_back(sla::toRgba(c));
+    return l;
+}
+
+cnx::SegmentParams logoSegmentParams() {
+    cnx::EngineParameters p;
+    p.applyProfile(cnx::ImageProfile::LogoMedAA);
+    return p.segment;
+}
+
+/// Mapa depois do PixelSegmenter, com os parâmetros do perfil de logo com AA.
+PixelMap pixelSegment(const Logo& l) {
+    cnx::PixelSegmenter seg(l.image, logoSegmentParams());
+    return seg.run({}, &l.palette).map;
+}
+
+/// Pixels cuja tinta final (índice da paleta) não existe em nenhum ponto do pixel: a franja de uma terceira cor.
+int fringePixels(const Logo& l, PixelMap& map) {
+    int fringe = 0;
+    constexpr int kSamples = 8;
+    for (int y = 0; y < l.scene.height; ++y) {
+        for (int x = 0; x < l.scene.width; ++x) {
+            std::vector<char> present(l.palette.colors.size(), 0);
+            for (int j = 0; j < kSamples; ++j) {
+                for (int i = 0; i < kSamples; ++i) {
+                    int cls = 0;
+                    for (std::size_t k = 0; k < l.scene.shapes.size(); ++k) {
+                        if (l.scene.shapes[k].inside(x + (i + 0.5) / kSamples, y + (j + 0.5) / kSamples)) cls = l.classOfShape[k];
+                    }
+                    present[static_cast<std::size_t>(cls)] = 1;
+                }
+            }
+            const std::int32_t ink = map.forest().stats(map.regionAt(x, y)).paletteIndex;
+            if (ink < 0 || !present[static_cast<std::size_t>(ink)]) ++fringe;
+        }
+    }
+    return fringe;
+}
+
+}  // namespace
+
+CNX_TEST(a_flat_background_with_beach_halo_is_not_flagged_as_a_shadow) {
+    // Retângulo vermelho com AA sobre branco, paleta com um amarelo a mais. Depois das praias, o fundo carrega os pixels
+    // de AA do lado branco do retângulo; vistos como um todo eles davam ao fundo chapado a variância de um gradiente,
+    // e a reconstrução refazia o fundo pela cor de paleta mais próxima da imagem desfocada: o amarelo.
+    cnxtest::LogoScene scene{"retangulo", 40, 30, Rgba8{255, 255, 255, 255}, {}, 3};
+    scene.shapes.push_back({cnxtest::rectShape(8.5, 6.5, 30.5, 20.5), Rgba8{220, 40, 40, 255}});
+    scene.shapes.push_back({cnxtest::rectShape(-9, -9, -8, -8), Rgba8{250, 190, 20, 255}});  // só para a tinta existir na paleta
+    Logo l = makeLogo(scene);
+    PixelMap map = pixelSegment(l);
+    const SubPixelSegmenter seg(l.image, logoSegmentParams(), l.palette);
+    seg.mergeMicroRegions(map);
+    CHECK(seg.splitAndMergeBeaches(map).beaches > 0);  // o halo existe: sem praias o teste não prova nada
+    CHECK(seg.flagShadowSegments(map) == 0);
+    CHECK(seg.rebuildShadowSegments(map) == 0);
+}
+
+CNX_TEST(antialiased_logos_come_out_without_a_third_ink_fringe) {
+    for (const cnxtest::LogoScene& scene : {cnxtest::shapesScene(), cnxtest::lettersScene()}) {
+        Logo l = makeLogo(scene);
+        const SubPixelSegmenter seg(l.image, logoSegmentParams(), l.palette);
+        cnx::SubPixelResult r = seg.run(pixelSegment(l));
+        const int fringe = fringePixels(l, r.map);
+        std::printf("  %s: %d regiões, %d pixels com tinta que não existe neles (sombras marcadas %d, faixas novas %d)\n", scene.name.c_str(),
+                    r.stats.finalRegions, fringe, r.stats.shadowFlagged, r.stats.shadowNewRegions);
+        CHECK_CTX(fringe == 0, scene.name);
+        // Uma região por forma conectada (e o fundo): nada de faixas de terceira cor entre elas.
+        CHECK_CTX(r.stats.finalRegions == (scene.name == "formas" ? 7 : 5), scene.name);
+        CHECK_CTX(allRegionsConnected(r.map), scene.name);
+    }
+}
+
+namespace {
+
+/// 32×8: coluna 0–3 branca, 4–27 gradiente linear de `top` a 0, 28–31 preta. `red` acrescenta duas linhas vermelhas
+/// no pé (linhas 6–7) ou no topo (linhas 0–1) do gradiente, que ocupa as outras seis; `redFirst` cria a região
+/// vermelha antes das demais (a ordem em que a floresta lista as vizinhas muda com isso).
+struct FadeOptions {
+    enum class Red { None, Below, Above } red = Red::None;
+    bool redFirst = false;
+    int top = 255;
+    bool mirror = false;  // branco à direita e preto à esquerda
+};
+
+struct Fade {
+    Array2D<Rgba8> image;
+    PixelMap map;
+    RegionId fade = 0, white = 0, black = 0, red = 0;
+    int firstRow = 0, lastRow = 7;  ///< linhas do gradiente
+};
+
+Fade makeFade(FadeOptions o = {}) {
+    const int w = 32;
+    const int h = 8;
+    const bool hasRed = o.red != FadeOptions::Red::None;
+    Fade f{Array2D<Rgba8>(w, h), PixelMap(w, h)};
+    if (hasRed && o.redFirst) f.red = f.map.createRegion();
+    f.fade = f.map.createRegion();
+    f.white = f.map.createRegion();
+    f.black = f.map.createRegion();
+    if (hasRed && !o.redFirst) f.red = f.map.createRegion();
+    if (o.red == FadeOptions::Red::Below) f.lastRow = 5;
+    if (o.red == FadeOptions::Red::Above) f.firstRow = 2;
+    for (int y = 0; y < h; ++y) {
+        for (int x0 = 0; x0 < w; ++x0) {
+            const int x = o.mirror ? w - 1 - x0 : x0;  // coluna na disposição não espelhada
+            RegionId id = f.fade;
+            Rgba8 c = gray(std::clamp(o.top - static_cast<int>(std::lround(o.top * (x - 4) / 23.0)), 0, 255));
+            if (hasRed && (y < f.firstRow || y > f.lastRow)) {
+                id = f.red;
+                c = Rgba8{220, 40, 40, 255};
+            } else if (x < 4) {
+                id = f.white;
+                c = kWhite;
+            } else if (x >= 28) {
+                id = f.black;
+                c = kBlack;
+            }
+            f.image(x0, y) = c;
+            f.map.setLabel(x0, y, id, c);
+        }
+    }
+    return f;
+}
+cnx::Palette withInk(Rgba8 extra) {
+    cnx::Palette p = blackAndWhite();
+    p.colors.push_back(sla::toRgba(extra));
+    return p;
+}
+
+/// Gradiente de branco a preto com uma faixa vermelha na vizinhança: a reconstrução tem de dar exatamente duas faixas,
+/// com a fronteira depois da coluna `lastBright` (contada a partir da ponta branca).
+void expectTwoBands(FadeOptions o, int lastBright) {
+    cnx::Palette p = blackAndWhite();
+    p.colors.push_back(sla::toRgba(Rgba8{220, 40, 40, 255}));
+    const std::string tag = std::string(o.red == FadeOptions::Red::Below ? "embaixo" : "em cima") + (o.redFirst ? ", criado antes" : ", criado depois") + (o.mirror ? ", espelhado" : "") + ", topo " + std::to_string(o.top);
+    Fade f = makeFade(o);
+    const SubPixelSegmenter seg(f.image, SegmentParams{}, p);
+    CHECK_CTX(seg.flagShadowSegments(f.map) == 1, tag);
+    CHECK_CTX(seg.rebuildShadowSegments(f.map) == 1, tag);
+    const RegionId bright = f.map.regionAt(o.mirror ? 26 : 5, 3);
+    const RegionId dark = f.map.regionAt(o.mirror ? 5 : 26, 3);
+    CHECK_CTX(bright != dark, tag);
+    for (int y = f.firstRow; y <= f.lastRow; ++y) {
+        for (int x = 4; x < 28; ++x) {
+            const bool isBright = o.mirror ? (31 - x) <= lastBright : x <= lastBright;
+            CHECK_CTX(f.map.regionAt(x, y) == (isBright ? bright : dark), tag + ": " + std::to_string(x) + "," + std::to_string(y));
+        }
+    }
+}
+}  // namespace
+
+CNX_TEST(a_fade_between_white_and_black_never_gets_a_band_in_a_third_ink) {
+    // O cinza do meio do gradiente está mais perto do amarelo (distância² 0,43) que do branco ou do preto (0,75): pela
+    // regra antiga de "cor de paleta mais próxima" ele virava uma faixa amarela entre as duas.
+    Fade f = makeFade();
+    const SubPixelSegmenter seg(f.image, SegmentParams{}, withInk(Rgba8{250, 188, 26, 255}));
+    CHECK(seg.flagShadowSegments(f.map) == 1);
+    CHECK(seg.rebuildShadowSegments(f.map) == 1);  // duas faixas, não três
+    const RegionId bright = f.map.regionAt(5, 3);
+    const RegionId dark = f.map.regionAt(26, 3);
+    CHECK(bright != dark);
+    for (int y = 0; y < 8; ++y) {
+        for (int x = 4; x < 28; ++x) CHECK_CTX(f.map.regionAt(x, y) == (x <= 15 ? bright : dark), std::to_string(x) + "," + std::to_string(y));
+    }
+}
+
+CNX_TEST(a_palette_gray_on_the_line_between_the_neighbor_inks_still_gets_its_band) {
+    // O cinza 128 da paleta está sobre a reta branco–preto: é uma mistura legítima, e a sombra ganha as três faixas.
+    Fade f = makeFade();
+    const SubPixelSegmenter seg(f.image, SegmentParams{}, withInk(gray(128)));
+    CHECK(seg.flagShadowSegments(f.map) == 1);
+    CHECK(seg.rebuildShadowSegments(f.map) == 2);
+    const RegionId bright = f.map.regionAt(5, 3);
+    const RegionId mid = f.map.regionAt(15, 3);
+    const RegionId dark = f.map.regionAt(26, 3);
+    CHECK(bright != mid && mid != dark && bright != dark);
+}
+
+CNX_TEST(the_blur_does_not_bleed_a_neighbor_ink_into_the_fade) {
+    // Uma faixa vermelha toca o pé (ou o topo) do gradiente. Um desfoque comum mistura o vermelho nas duas linhas de cima
+    // dele e o cinza do meio vira vermelho; o desfoque restrito à região deixa o gradiente em duas faixas. E a vizinha
+    // vermelha também tem de ficar de fora do par de extremos, onde quer que ela apareça na lista de vizinhas (por isso
+    // as oito disposições: vermelho em cima ou embaixo, criado antes ou depois das outras regiões, espelhado ou não).
+    for (const FadeOptions::Red where : {FadeOptions::Red::Below, FadeOptions::Red::Above}) {
+        for (const bool redFirst : {false, true}) {
+            for (const bool mirror : {false, true}) expectTwoBands({where, redFirst, 255, mirror}, 15);
+        }
+    }
+}
+
+CNX_TEST(the_pair_of_extremes_is_chosen_from_all_the_colors_of_the_region) {
+    // O gradiente começa com um platô de branco puro (top = 300 satura em 255 nas 4 primeiras colunas), e o último pixel
+    // da região, em ordem de varredura, cai nele (espelhado ou não). O branco é extremo de dois pares (branco–preto e
+    // branco–vermelho), então esse pixel sozinho empata os dois e a ordem das vizinhas decide; as demais cores é que
+    // desempatam: elas só estão na reta branco–preto. Com o par errado a faixa escura viraria vermelha, e a fronteira
+    // sairia em torno do cinza 158 (coluna 15) em vez do cinza 128 (entre as colunas 17 e 18).
+    for (const FadeOptions::Red where : {FadeOptions::Red::Below, FadeOptions::Red::Above}) {
+        for (const bool redFirst : {false, true}) {
+            for (const bool mirror : {false, true}) expectTwoBands({where, redFirst, 300, mirror}, 17);
+        }
+    }
+}
+
+CNX_TEST(the_blur_radius_parameter_controls_the_reconstruction) {
+    // Gradiente de 150 a 0 entre o branco e o preto: com raio 2 a ponta esquerda (150) fica clara e vira uma faixa branca;
+    // com raio 8 a janela, cortada pela borda da região, tem média 124 (< 127,5) e a faixa clara não existe.
+    for (const auto& [radius, bands] : {std::pair{2, 1}, std::pair{8, 0}}) {
+        Fade f = makeFade({FadeOptions::Red::None, false, 150});
+        SegmentParams params;
+        params.shadowBlurRadius = radius;
+        const SubPixelSegmenter seg(f.image, params, blackAndWhite());
+        CHECK_CTX(seg.flagShadowSegments(f.map) == 1, "raio " + std::to_string(radius));
+        CHECK_CTX(seg.rebuildShadowSegments(f.map) == bands, "raio " + std::to_string(radius));
+    }
+}
+
+CNX_TEST(a_lone_fade_region_is_rebuilt_with_the_whole_palette) {
+    // Sem vizinhas não há tintas vizinhas para consultar: a região única do mapa usa a paleta inteira.
+    const int w = 32;
+    const int h = 8;
+    Picture p{Array2D<Rgba8>(w, h), PixelMap(w, h)};
+    const RegionId only = p.map.createRegion();
+    for (int y = 0; y < h; ++y) {
+        for (int x = 0; x < w; ++x) {
+            p.image(x, y) = gray(255 - static_cast<int>(std::lround(255.0 * x / (w - 1))));
+            p.map.setLabel(x, y, only, p.image(x, y));
+        }
+    }
+    const SubPixelSegmenter seg(p.image, SegmentParams{}, blackAndWhite());
+    CHECK(seg.flagShadowSegments(p.map) == 1);
+    CHECK(seg.rebuildShadowSegments(p.map) == 1);
+    CHECK(p.map.regionAt(3, 3) != p.map.regionAt(28, 3));
+}
+CNX_TEST(shadow_detection_counts_only_interior_pixels) {
+    // Região de 20×20 chapada branca, com 1 px de borda em cinza-claro (o halo de AA que as praias deixam): os 76 pixels
+    // de borda sozinhos têm variância e o desfoque comum a preserva, os 324 do interior não têm nenhuma. Marcada pelos
+    // pixels de borda seria sombra; pelos do interior, não.
+    const int n = 20;
+    Picture p{Array2D<Rgba8>(n + 4, n + 4), PixelMap(n + 4, n + 4)};
+    const RegionId dark = p.map.createRegion();
+    const RegionId box = p.map.createRegion();
+    for (int y = 0; y < n + 4; ++y) {
+        for (int x = 0; x < n + 4; ++x) {
+            const bool inside = x >= 2 && x < n + 2 && y >= 2 && y < n + 2;
+            const bool rim = inside && (x == 2 || x == n + 1 || y == 2 || y == n + 1);
+            const Rgba8 c = !inside ? kBlack : (rim ? gray(180) : kWhite);
+            p.image(x, y) = c;
+            p.map.setLabel(x, y, inside ? box : dark, c);
+        }
+    }
+    SegmentParams params;
+    params.shadowMinPixels = 16;
+    const SubPixelSegmenter seg(p.image, params, blackAndWhite());
+    CHECK(seg.flagShadowSegments(p.map) == 0);
+    // O pixel da borda da imagem também não é interior (falta um vizinho): uma região que ocupa a imagem inteira, com o
+    // anel externo em cinza, é chapada por dentro.
+    Picture whole{Array2D<Rgba8>(24, 24), PixelMap(24, 24)};
+    const RegionId only = whole.map.createRegion();
+    for (int y = 0; y < 24; ++y) {
+        for (int x = 0; x < 24; ++x) {
+            const bool edge = x == 0 || y == 0 || x == 23 || y == 23;
+            whole.image(x, y) = edge ? gray(150) : kWhite;
+            whole.map.setLabel(x, y, only, whole.image(x, y));
+        }
+    }
+    SegmentParams one;
+    one.shadowBlurRadius = 0;  // sem suavização a variância do anel, se contada, seria inteira
+    CHECK(SubPixelSegmenter(whole.image, one, blackAndWhite()).flagShadowSegments(whole.map) == 0);
+}
+
+CNX_TEST(shadow_detection_still_flags_a_gradient_that_only_its_interior_carries) {
+    // Uma caixa de 12×12 com um gradiente no interior (100 pixels) e a borda chapada: continua sendo sombra, então a
+    // regra por pixels interiores não deixou de enxergar o gradiente. E o mínimo de pixels conta só os interiores.
+    const int n = 12;
+    Picture p{Array2D<Rgba8>(n + 4, n + 4), PixelMap(n + 4, n + 4)};
+    const RegionId outer = p.map.createRegion();
+    const RegionId box = p.map.createRegion();
+    for (int y = 0; y < n + 4; ++y) {
+        for (int x = 0; x < n + 4; ++x) {
+            const bool inside = x >= 2 && x < n + 2 && y >= 2 && y < n + 2;
+            const bool rim = inside && (x == 2 || x == n + 1 || y == 2 || y == n + 1);
+            const Rgba8 c = !inside ? kBlack : (rim ? gray(128) : gray(30 + 20 * (x - 3)));
+            p.image(x, y) = c;
+            p.map.setLabel(x, y, inside ? box : outer, c);
+        }
+    }
+    SegmentParams params;
+    params.shadowMinPixels = 100;  // exatamente os interiores
+    params.shadowBlurRadius = 1;
+    CHECK(SubPixelSegmenter(p.image, params, blackAndWhite()).flagShadowSegments(p.map) == 1);
+    params.shadowMinPixels = 101;  // a região tem 144 pixels, mas só 100 interiores
+    PixelMap again = p.map;
+    CHECK(SubPixelSegmenter(p.image, params, blackAndWhite()).flagShadowSegments(again) == 0);
 }
 
 // ================================================================ paleta

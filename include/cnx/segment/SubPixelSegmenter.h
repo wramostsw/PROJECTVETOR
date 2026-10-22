@@ -6,7 +6,8 @@
 //   2. praias (splitAndMergeBeaches): faixas finas de pixels de transição entre duas cores dominantes
 //      são repartidas entre as duas, pixel a pixel, para a fronteira cair no meio da transição;
 //   3. sombras (flagShadowSegments + rebuild): regiões de gradiente suave (sombra ou desfoque) são
-//      marcadas e reconstruídas em faixas pela cor da imagem DESFOCADA mais próxima da paleta;
+//      marcadas (pelos pixels interiores) e reconstruídas em faixas pela cor da imagem DESFOCADA dentro da
+//      região, escolhida entre as tintas das regiões vizinhas (nunca uma terceira tinta; docs §1.26);
 //   4. paleta: cada região recebe a cor da paleta mais próxima de sua média (snapColorsToPalette),
 //      vizinhas de mesma cor da paleta são fundidas, enforceMinNumPixels varre os fragmentos
 //      residuais e compact() (buildRegions) renumera.
@@ -64,10 +65,12 @@ public:
     int mergeMicroRegions(PixelMap& map) const;
     /// Divide ou funde as praias entre suas duas cores dominantes.
     BeachResult splitAndMergeBeaches(PixelMap& map) const;
-    /// Marca com RegionFlag::Shadow as regiões de gradiente suave. Retorna quantas.
+    /// Marca com RegionFlag::Shadow as regiões de gradiente suave. A variância é medida só nos pixels
+    /// interiores (os 4 vizinhos na região) e `shadowMinPixels` conta esses pixels. Retorna quantas.
     int flagShadowSegments(PixelMap& map) const;
-    /// Reconstrói as regiões marcadas em faixas pela cor da paleta mais próxima da imagem desfocada.
-    /// Retorna o nº de regiões novas.
+    /// Reconstrói as regiões marcadas em faixas, pela imagem desfocada dentro da região (a média só usa pixels dela),
+    /// escolhendo para cada pixel a mais próxima entre os dois extremos da sombra (tintas de regiões vizinhas) e as
+    /// cores de paleta sobre a reta entre eles. Retorna o nº de regiões novas.
     int rebuildShadowSegments(PixelMap& map) const;
     /// Funde vizinhas 4-adjacentes com o mesmo paletteIndex (≥ 0). Retorna o nº de fusões.
     int mergeSamePaletteNeighbors(PixelMap& map) const;
@@ -80,13 +83,14 @@ public:
     static int splitDisconnected(PixelMap& map, const sla::Array2D<sla::Rgba8>& image);
 
 private:
-    const sla::Array2D<sla::Rgba>& blurred() const;
     std::size_t nearestPalette(const sla::Rgba& c) const;
+    /// Índices da paleta que a região de sombra `r` pode usar, dadas as cores desfocadas dos seus pixels
+    /// (ver `rebuildShadowSegments`).
+    std::vector<std::size_t> shadowInks(RegionForest& forest, RegionId r, const std::vector<sla::Rgba>& colors) const;
 
     const sla::Array2D<sla::Rgba8>& image_;
     SegmentParams params_;
     Palette palette_;
-    mutable sla::Array2D<sla::Rgba> blurred_;  ///< cache preguiçoso do desfoque de caixa
 };
 
 }  // namespace cnx
