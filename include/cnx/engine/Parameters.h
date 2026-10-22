@@ -182,7 +182,8 @@ enum class UserControl : std::uint8_t { Sensitivity, Complexity, Smoothing, Curv
 /// Aplica um controle (valor inteiro da interface) via multiplicativeScale sobre o(s) parâmetro(s) associado(s).
 void applyUserControl(EngineParameters& params, UserControl control, int value);
 
-/// Erro de leitura de .apf com o número da linha (1-based; 0 = erro de E/S).
+/// Erro de leitura/escrita de .apf com o número da linha (1-based). 0 = erro de E/S, ou incoerência que não
+/// vem de nenhuma linha do arquivo (os valores que já estavam em `params` violam uma regra).
 class ParameterFileError : public std::runtime_error {
 public:
     ParameterFileError(const std::string& message, int line) : std::runtime_error(message), line_(line) {}
@@ -194,6 +195,14 @@ private:
 
 /// Perfis .apf em texto plano, uma entrada por linha: `Classe::parametro valor`
 /// (ex.: `ContourSmoother::prior_strengths 10`). Linhas vazias e iniciadas por '#' são ignoradas.
+///
+/// Formato (docs/ARQUITETURA.md §1.18):
+///  - chave = `Classe::nome` (letras, dígitos e '_'), sensível a maiúsculas; valor = o resto da linha;
+///  - listas (`measurement_types`, `spacing_weight`) levam um valor por fase, separados por espaço;
+///  - inteiros em decimal, reais em decimal ou científico (ponto, sem locale), booleanos `true|false|1|0`,
+///    enumerações por nome (`EP_LOGO_MED_AA`, `spring|generative|none`), `forced_num_colors` aceita `none`;
+///  - o que o arquivo não menciona fica como estava em `params` (um .apf pode ser parcial);
+///  - chave repetida é erro, e a leitura é transacional: se algo falha, `params` não muda.
 class ParameterFiler {
 public:
     enum class Mode : std::uint8_t {
@@ -201,12 +210,20 @@ public:
         Lenient,  ///< chave desconhecida → devolvida na lista de avisos (compatibilidade entre versões)
     };
 
-    /// Retorna as chaves ignoradas (sempre vazio no modo Strict).
+    /// Retorna as chaves ignoradas (sempre vazio no modo Strict). Lança ParameterFileError.
     static std::vector<std::string> readAPF(std::istream& in, EngineParameters& params, Mode mode = Mode::Strict);
     static std::vector<std::string> readAPF(const std::filesystem::path& file, EngineParameters& params,
                                             Mode mode = Mode::Strict);
+
+    /// Escreve todos os campos. Lança std::invalid_argument se `params` viola alguma regra de `validate`
+    /// (o leitor não conseguiria reabri-lo) e ParameterFileError em falha de E/S. A versão em arquivo grava
+    /// num temporário e renomeia: um arquivo anterior nunca fica pela metade.
     static void writeAPF(std::ostream& out, const EngineParameters& params);
     static void writeAPF(const std::filesystem::path& file, const EngineParameters& params);
+
+    /// Primeira violação das faixas e relações entre campos (as mesmas que os módulos exigem ao construir-se),
+    /// ou nullopt. É o que o leitor aplica depois de ler e o escritor antes de escrever.
+    static std::optional<std::string> validate(const EngineParameters& params);
 };
 
 }  // namespace cnx

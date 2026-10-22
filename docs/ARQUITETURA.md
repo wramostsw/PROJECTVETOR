@@ -81,7 +81,7 @@ cnx-praia/
 ├─ include/
 │  ├─ sla/            Vec.h  Array.h  BezierCurve.h  [linalg.h  Prng.h  Timers.h  Memory.h]
 │  └─ cnx/
-│     ├─ engine/      CoreEngine.h  Parameters.h  Fingerprint.h  TaskContext.h  [ParameterFiler]
+│     ├─ engine/      CoreEngine.h  Parameters.h (inclui ParameterFiler)  Fingerprint.h  TaskContext.h
 │     ├─ preprocess/  Preprocessor.h  [SignalImage.h  EdgeImage.h  FlowField.h  AADetector.h]
 │     ├─ classify/    Classifier.h  [ImageFeatures.h  DecisionTree.h]
 │     ├─ palette/     ColorHistogram.h  KMeans.h  PaletteFinder.h  WeightsFinder.h
@@ -97,7 +97,7 @@ cnx-praia/
 │                      vector/VectorImage.cpp, BoundaryTracer.cpp, GenerativeModel.cpp, EnergyTerms.cpp,
 │                      Optimizer.cpp, CrossingGuard.cpp, ContourSmoother.cpp; fit/BezierFitter.cpp;
 │                      sla/BezierCurve.cpp; palette/*.cpp; segment/SubPixelSegmenter.cpp;
-│                      engine/CoreEngine.cpp, Parameters.cpp; preprocess/Preprocessor.cpp;
+│                      engine/CoreEngine.cpp, Parameters.cpp, ParameterFiler.cpp; preprocess/Preprocessor.cpp;
 │                      classify/Classifier.cpp; export/ExporterSettings.cpp)
 ├─ qt/                EngineController.{h,cpp}  QImageLoader.{h,cpp}
 ├─ tests/
@@ -107,7 +107,7 @@ cnx-praia/
 │  │                  generative_model_test, energy_terms_test, optimizer_test, crossing_guard_test,
 │  │                  contour_smoother_test, bezier_curve_test, bezier_fitter_test,
 │  │                  sub_pixel_segmenter_test, palette_test, weights_finder_test,
-│  │                  parameters_test, preprocess_classify_test, core_engine_test
+│  │                  parameters_test, preprocess_classify_test, core_engine_test, parameter_filer_test
 │  └─ golden/         imagens + SVG de referência (regressão)
 ├─ bench/             (Google Benchmark: k-means, segmentação, CG, ajuste Bézier)
 └─ third_party/       ann/  dxflib/
@@ -636,6 +636,56 @@ O snapshot só é publicado se a execução termina (`Completed`). `Cancelled` e
 - **Escaparam e agora são detectados (13).** Saída sem o formato na impressão (teste: mudar só o formato); curvas sem recalcular as áreas (compara com `updateFaceAreas()` de novo); ausência do teste de cancelamento entre estágios (cancelar ao fim do ajuste não pode chegar ao plugin de saída, que não tem pontos de verificação); `setInput` mantendo a edição manual (reaplicar o mesmo caminho a descarta); `needsToSegment` fora por um; gaussiana com borda circular (rampa), raio curto (a 3 px do impulso), ampliação bilinear sem o meio pixel (2 → 4 colunas dá 0, 25, 75, 100); limiares do classificador (70 % chapado → foto) e limite de cores (exatamente `maxColors` ainda é logo, uma a mais é foto); impressão do fundo sem o conjunto (mesmo tamanho, faces diferentes); limpar o que já está vazio; limiar final sem o piso do inicial.
 - **Equivalentes (2).** *Segmentação sem o perfil na impressão (C4)* e *paleta sem a semente (C11)*: o perfil e a semente já entram na impressão do `Classify`, que está encadeada em todas as de baixo; remover o termo duplicado não muda nenhuma decisão. Os termos ficam como cinto e suspensório (o perfil também decide o modo de segmentação).
 - **Escapa (1).** *Paleta exata que para no primeiro passo (C21):* só difere quando uma varredura de diagonais cria outra quina diagonal, o que exigiria uma imagem construída para isso. O limite `finalSweepCap` protege contra laço infinito.
+### 1.18 `ParameterFiler`: perfis `.apf`
+
+**Formato.** Texto plano, uma entrada por linha, `Classe::parametro valor` (a especificação dá o exemplo `ContourSmoother::prior_strengths 10`). Linhas vazias e iniciadas por `#` são ignoradas; o escritor abre com `# cnx .apf v1` e agrupa as chaves por classe, cada grupo sob um comentário com o nome da classe. Esses comentários são só para humanos: um leitor que siga a especificação os ignora.
+
+| Classe | Chaves (`EngineParameters`) |
+|---|---|
+| `CoreEngine` | `seed` (inteiro de 64 bits sem sinal) |
+| `Preprocessor` | `target_area_px blur_sigma_px flatten_alpha allow_upscale` |
+| `ParameterClassifier` | `auto_classify forced_profile` |
+| `PaletteFinder` | `min_colors max_colors kmeans_max_rounds histogram_bins color_penalty forced_num_colors edge_scale exact_color_min_share refine_rounds` |
+| `PixelSegmenter` | `quad_tree_block quad_tree_variance merge_thresh_start merge_thresh_growth merge_thresh_max min_region_pixels what_if_factor final_sweep_cap` |
+| `SubPixelSegmenter` | `micro_region_max_pixels beach_line_tolerance beach_min_contrast beach_neighbor_share shadow_variance shadow_smooth_ratio shadow_min_pixels shadow_blur_radius` |
+| `ContourSmoother` | `measurement_types spacing_weight` (3 valores, um por fase) `fidelity_weight prior_type prior_strengths air_pressure_weight air_pressure_max_nodes border_anchor_weight border_hard_constraint fidelity_free_radius_px quarantine_rounds min_segment_px puncture_corner_thresh puncture_flatness_thresh puncture_arm_px puncture_on_phase max_cg_iterations max_node_step_px gradient_tolerance energy_tolerance` |
+| `BezierFitter` | `stat_thresh_initial stat_thresh_final max_rounds initial_fragment_nodes newton_max_iterations final_sweeps enforce_g1` |
+
+Os nomes `prior_strengths`, `air_pressure_weight`, `measurement_types`, `puncture_corner_thresh`, `puncture_flatness_thresh` e `stat_thresh_final` são os da especificação; os demais seguem o mesmo padrão `snake_case` dos campos de C++. A classe é a do módulo que usa o parâmetro, e não a do struct (o `SegmentParams` se divide entre `PixelSegmenter` e `SubPixelSegmenter`). O que a especificação não nomeia (por exemplo as chaves do `SubPixelSegmenter`) é escolha minha, sem compatibilidade a preservar.
+
+**Valores.** Inteiros em decimal; reais em decimal ou científico, com ponto e sem *locale* (`std::from_chars`/`std::to_chars`); booleanos `true|false|1|0`; enumerações pelo nome: `EP_LOGO_HIG_AA … EP_PHOTO_LOW, EP_CUSTOM` (os nomes da especificação; `Custom` é a décima entrada, a que a especificação não enumera) e `spring|generative|none`; `forced_num_colors` aceita `none`. Listas: valores separados por espaço ou tabulação, exatamente um por fase. Tudo é sensível a maiúsculas.
+
+**Escrita sem perda.** O `to_chars` sem precisão gera a *menor* representação que reconstrói exatamente o mesmo `double`; assim `ler(escrever(p)) == p` bit a bit, inclusive com `-0`, subnormais e `DBL_MAX` (testado com 300 conjuntos aleatórios de mantissa cheia). Escrever duas vezes dá o mesmo texto.
+
+**Semântica de leitura.**
+- *Parcial:* o que o arquivo não cita fica como estava em `params`. Um `.apf` pode ser só `BezierFitter::stat_thresh_final 0.9`.
+- *Transacional:* a leitura trabalha numa cópia e só a publica se o arquivo inteiro for aceito. Erro em qualquer linha, ou regra violada no fim, deixa `params` intacto.
+- *Chave repetida é erro* (nos dois modos): com duas linhas para o mesmo campo, "a última vence" esconderia um engano de edição.
+- *Modos:* `Strict` (padrão) rejeita chave desconhecida; `Lenient` as devolve (sem repetição, na ordem de aparição) para o chamador avisar, o que permite abrir um perfil de versão futura. Sintaxe malformada, valor ruim de chave conhecida e repetição são erro nos dois.
+- *Robustez de entrada:* BOM UTF-8 no início, `\r\n`, tabulações, última linha sem quebra; caractere de controle ou linha maior que 4096 caracteres são recusados.
+- *Erros:* `ParameterFileError` com a linha (1-based) e uma mensagem que cita a chave e o texto ofensor, por exemplo `PaletteFinder::max_colors: inteiro inválido: 'oito'`. Linha 0 é erro de E/S ou incoerência que não vem de nenhuma linha do arquivo.
+
+**Validação única.** `ParameterFiler::validate` reúne as faixas e as relações entre campos (`max_colors ≥ min_colors`, `merge_thresh_max ≥ merge_thresh_start`, `stat_thresh_final ≥ stat_thresh_initial`, `histogram_bins ∈ [2, 256]`, `prior_type = 3`, `puncture_on_phase ∈ [0, 2]`, reais sempre finitos…). Elas espelham o que cada módulo já exige no construtor (PaletteFinder, PixelSegmenter, ContourSmoother, BezierFitter, `preprocess`), de modo que **um `.apf` aceito nunca faz o motor falhar na construção** (o teste constrói os módulos com 300 conjuntos aleatórios). O leitor aplica as regras depois de ler e atribui o erro à linha do **último** campo envolvido que o arquivo definiu; o escritor as aplica antes de escrever e lança `std::invalid_argument` em vez de produzir um arquivo que o leitor recusaria.
+
+**Escrita em arquivo.** Grava `perfil.apf.tmp` e renomeia sobre o destino, de modo que uma falha no meio nunca deixa o arquivo anterior pela metade (e parâmetros inválidos nem tocam no disco).
+
+**Uma tabela só.** Cada campo é uma entrada `{chave, leitor, escritor}` construída por `integerField / doubleField / boolField / optionalIntField / enumField / …`, a partir de um acessor genérico `[](auto& p) -> auto& { return p.palette.maxColors; }` que serve ao struct com e sem `const`. Leitor e escritor não podem divergir, e esquecer um campo é pego por `every_field_has_exactly_one_line…` (confere que cada campo muda exatamente uma linha, e que o número de linhas é o de campos).
+
+**Desvios e limites.**
+- A especificação diz apenas "texto plano no formato `Classe::parametro valor`". O cabeçalho de versão, a lista fechada de chaves, as regras de validação e os modos são decisões minhas.
+- Os valores dos perfis embutidos (`applyProfile`) e dos controles de usuário (`applyUserControl`) não são lidos de `.apf`: continuam em código até que a especificação dê as tabelas; um `.apf` define `Custom`.
+- Não há `include` entre arquivos nem expansão de variáveis: um `.apf` é só dados.
+
+**Testes** (`parameter_filer_test`, 14):
+- *Ida e volta:* padrões; 300 conjuntos aleatórios (escrever → ler → escrever idêntico, e construção de todos os módulos); extremos (`DBL_MAX`, subnormal, `-0`, `0.1+0.2`, `UINT64_MAX`, `INT_MAX`); cada campo muda exatamente uma linha.
+- *Sintaxe:* comentários, BOM, `\r\n`, tabulações, arquivo parcial, vazio, ordem livre; todas as formas de valor (booleano, `none`, as dez enumerações, listas, científico).
+- *Erros:* linhas malformadas e dezenas de valores ruins (inteiro, real, booleano, enumeração, listas curtas ou longas), cada um com a linha esperada, o texto da mensagem e `params` intacto; mais de 30 violações de faixa ou de relação entre campos e os valores-limite aceitos; incoerência vinda de valores anteriores (linha 0); leitura que falha no meio (inclusive `badbit`).
+- *Modos:* `Strict` e `Lenient`.
+- *E/S:* arquivo ida e volta, substituição, destino inválido, diretório como destino, arquivo ou diretório inexistente, *stream* em falha.
+
+**Teste de mutação** (45 defeitos injetados um por vez, em Release):
+- **Detectados na primeira rodada (45).** Leitor: chave repetida aceita, BOM e CR final não removidos, limite de linha frouxo, `#` não reconhecido, caracteres de controle aceitos, modo estrito aceitando chave desconhecida, chaves ignoradas repetidas, valor ausente, leitura que escreve direto em `params` (perde a transacionalidade), regras não aplicadas, erro atribuído à primeira linha em vez da última, chaves definidas não registradas, tabulação que não separa, indentação não removida, `badbit` ignorado. Valores: real impresso com 6 dígitos, real não finito, inteiro ou real com lixo no fim, `1` como booleano, `none`, listas e escalares com valores a mais, nome do parâmetro ou identificador começando por dígito. Escritor: não validar, cabeçalho por classe, erro de `rename` ignorado. Regras: 16 limites trocados (`>=` por `>`, faixas ampliadas em 1, `prior_type`, `puncture_on_phase`, `stat_thresh_final = initial`, `max_colors = min_colors` etc.), cada um com um teste no valor-limite dos dois lados.
+- **Não injetados, por serem equivalentes ou inobserváveis (2).** A segunda checagem de enumerações (`findProblem(work)`) depois das regras na leitura: o leitor só produz enumerações da tabela, então ela nunca dispara (ela vale para o escritor, onde há teste). A troca de `perfil.apf.tmp` por escrever direto no destino: só difere se o processo morrer no meio da escrita, o que um teste de unidade não reproduz de forma portátil.
 ---
 
 ## 2. Formulação matemática
