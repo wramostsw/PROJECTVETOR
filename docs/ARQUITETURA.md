@@ -82,8 +82,8 @@ cnx-praia/
 │  ├─ sla/            Vec.h  Array.h  BezierCurve.h  [linalg.h  Prng.h  Timers.h  Memory.h]
 │  └─ cnx/
 │     ├─ engine/      CoreEngine.h  Parameters.h (inclui ParameterFiler)  Fingerprint.h  TaskContext.h
-│     ├─ preprocess/  Preprocessor.h  [SignalImage.h  EdgeImage.h  FlowField.h  AADetector.h]
-│     ├─ classify/    Classifier.h  [ImageFeatures.h  DecisionTree.h]
+│     ├─ preprocess/  Preprocessor.h  EdgeImage.h  AADetector.h  [SignalImage.h  FlowField.h]
+│     ├─ classify/    Classifier.h (medidas + árvore)
 │     ├─ palette/     ColorHistogram.h  KMeans.h  PaletteFinder.h  WeightsFinder.h
 │     ├─ segment/     PixelMap.h  QuadTree.h  PixelSegmenter.h  SubPixelSegmenter.h
 │     │               [SuperPixelSegmenter.h  CoOccurrenceMatrix.h  BipartiteMatcher.h
@@ -97,7 +97,8 @@ cnx-praia/
 │                      vector/VectorImage.cpp, BoundaryTracer.cpp, GenerativeModel.cpp, EnergyTerms.cpp,
 │                      Optimizer.cpp, CrossingGuard.cpp, ContourSmoother.cpp; fit/BezierFitter.cpp;
 │                      sla/BezierCurve.cpp; palette/*.cpp; segment/SubPixelSegmenter.cpp;
-│                      engine/CoreEngine.cpp, Parameters.cpp, ParameterFiler.cpp; preprocess/Preprocessor.cpp;
+│                      engine/CoreEngine.cpp, Parameters.cpp, ParameterFiler.cpp; preprocess/Preprocessor.cpp,
+│                      EdgeImage.cpp, AADetector.cpp;
 │                      classify/Classifier.cpp; export/ExporterSettings.cpp)
 ├─ qt/                EngineController.{h,cpp}  QImageLoader.{h,cpp}
 ├─ tests/
@@ -107,7 +108,8 @@ cnx-praia/
 │  │                  generative_model_test, energy_terms_test, optimizer_test, crossing_guard_test,
 │  │                  contour_smoother_test, bezier_curve_test, bezier_fitter_test,
 │  │                  sub_pixel_segmenter_test, palette_test, weights_finder_test,
-│  │                  parameters_test, preprocess_classify_test, core_engine_test, parameter_filer_test
+│  │                  parameters_test, preprocess_classify_test, core_engine_test, parameter_filer_test,
+│  │                  edge_classifier_test
 │  └─ golden/         imagens + SVG de referência (regressão)
 ├─ bench/             (Google Benchmark: k-means, segmentação, CG, ajuste Bézier)
 └─ third_party/       ann/  dxflib/
@@ -562,7 +564,7 @@ O passo de Schur coincide com a solução do sistema denso (k+m)×(k+m) (testado
 ### 1.16 `PaletteFinder` e `WeightsFinder`: decisões de implementação
 
 **Pipeline da paleta** (`include/cnx/palette/`):
-1. **Pesos de pixel.** w = 1/(1 + borda/`edgeScale`), com a borda dada pelo gradiente de Sobel nos 4 canais (RGBA em [0, 1]) dividido por 4, de modo que um degrau de amplitude a em um canal dá a (um degrau preto|branco em RGB dá √3). É o `EdgeImage` da §3, que ainda não existe como módulo à parte. Os pixels de transição pesam menos, para o antialiasing não criar cores falsas.
+1. **Pesos de pixel.** w = 1/(1 + borda/`edgeScale`), com a borda dada pelo gradiente de Sobel nos 4 canais (RGBA em [0, 1]) dividido por 4, de modo que um degrau de amplitude a em um canal dá a (um degrau preto|branco em RGB dá √3). É o `EdgeImage` (§1.19), que a paleta usa via `EdgeImage::sharpnessWeights`. Os pixels de transição pesam menos, para o antialiasing não criar cores falsas.
 2. **Histograma esparso** (`ColorHistogram`), 16 faixas por canal (8 no modo rápido): só as células ocupadas existem. Cada célula guarda o peso, a **média ponderada** das cores que caíram nela e o espalhamento interno Σ w‖c − média‖². Assim o erro de um agrupamento medido nas células é **exatamente** o erro nos pixels (testado: 1e-9), e o k-means tem custo independente de N (o coreset da §0, item 11).
 3. **K = minColors..maxColors.** Sementes (`chooseSeeds`): os picos do histograma, pulando os que ficam a menos de 2 faixas de uma semente já escolhida; as que faltarem saem de k-means++ (amostragem D² ponderada pelo peso, com `myPrng` semeado por seed ⊕ K). Depois, Lloyd ponderado com no máximo `kmeansMaxRounds` (10) rodadas e distância em RGBA. Centros que ficam vazios são descartados.
 4. **Nota** = log(erro + 1) + (cores − 2)·`colorPenalty`, com o erro quadrático médio por unidade de peso (RGBA em [0, 1]), e "cores" = centros não vazios. Fica a menor nota (empate → menos cores). A normalização por peso é uma escolha minha: com o erro total, a nota dependeria do tamanho da imagem.
@@ -623,11 +625,11 @@ O snapshot só é publicado se a execução termina (`Completed`). `Cancelled` e
 **Desvios da especificação (por escolha minha).**
 - **Uma thread orquestradora**, não uma por estágio: os estágios são sequenciais por dependência de dados, e o paralelismo útil está **dentro** deles (§1.6). `workerThreads` fica reservado.
 - O cancelamento é cooperativo (`std::stop_token` + `CancelTaskException` nos pontos de verificação dos `TaskContext`), com a mesma latência de checagem dos módulos.
-- O **classificador é um substituto declarado** das duas árvores de decisão (20 e 62 medidas) que a especificação cita sem defini-las: três regras sobre cores significativas, parcela de pixels em cores chapadas e formato com perda (JPEG → foto; chapada ≥ 99 % → `LogoMed`; chapada entre 80 e 99 % → `LogoMedAA`; abaixo disso, `PhotoMed`). Os limiares são provisórios.
+- O **classificador** usa medidas reais e uma árvore escrita à mão no lugar da árvore treinada da especificação (§1.19). A primeira versão, de três regras sobre cores exatas, foi substituída.
 
 **Testes** (`parameters_test`, `preprocess_classify_test`, `core_engine_test`):
 - *Parâmetros:* sensibilidade de cada campo de cada struct à impressão (um campo esquecido reaproveitaria cache indevido); canonicalização de −0,0, NaN e separação de strings; tabela dos nove perfis; multiplicatividade e saturação dos controles; `BackgroundSelection` (desfazer/refazer, descarte do ramo, equivalência de impressão).
-- *Pré-processamento e classificador:* média de área exata (blocos 2×2, razão não inteira, conservação da massa); gaussiana (normalização, simetria, bordas replicadas); alfa, área-alvo, ampliação; validação e cancelamento; as três regras do classificador e o perfil forçado.
+- *Pré-processamento e classificador:* média de área exata (blocos 2×2, razão não inteira, conservação da massa); gaussiana (normalização, simetria, bordas replicadas); alfa, área-alvo, ampliação; validação e cancelamento; casos básicos do classificador e o perfil forçado (o corpus e as medidas estão em `edge_classifier_test`, §1.19).
 - *Motor:* execução completa e progresso monótono dentro da faixa de cada estágio; alterar só o ajuste refaz só do `FitBezier` para baixo (identidade dos `shared_ptr`); cada grupo de parâmetros suja exatamente o seu estágio; execução sem nada sujo; alvo parcial; cancelamento (no carregador, entre estágios, dentro do suavizador, e sem estragar o cache); `start` cancelando a execução anterior; falhas; exceções do observador; disco com AA → `LogoMedAA` e área do disco a 0,2 % do círculo; perfil forçado; edição manual; estágio de saída; leitores concorrentes.
 - Resultados: 19 alvos de CTest, Debug e Release, sem avisos do MSVC /W4.
 
@@ -686,6 +688,94 @@ Os nomes `prior_strengths`, `air_pressure_weight`, `measurement_types`, `punctur
 **Teste de mutação** (45 defeitos injetados um por vez, em Release):
 - **Detectados na primeira rodada (45).** Leitor: chave repetida aceita, BOM e CR final não removidos, limite de linha frouxo, `#` não reconhecido, caracteres de controle aceitos, modo estrito aceitando chave desconhecida, chaves ignoradas repetidas, valor ausente, leitura que escreve direto em `params` (perde a transacionalidade), regras não aplicadas, erro atribuído à primeira linha em vez da última, chaves definidas não registradas, tabulação que não separa, indentação não removida, `badbit` ignorado. Valores: real impresso com 6 dígitos, real não finito, inteiro ou real com lixo no fim, `1` como booleano, `none`, listas e escalares com valores a mais, nome do parâmetro ou identificador começando por dígito. Escritor: não validar, cabeçalho por classe, erro de `rename` ignorado. Regras: 16 limites trocados (`>=` por `>`, faixas ampliadas em 1, `prior_type`, `puncture_on_phase`, `stat_thresh_final = initial`, `max_colors = min_colors` etc.), cada um com um teste no valor-limite dos dois lados.
 - **Não injetados, por serem equivalentes ou inobserváveis (2).** A segunda checagem de enumerações (`findProblem(work)`) depois das regras na leitura: o leitor só produz enumerações da tabela, então ela nunca dispara (ela vale para o escritor, onde há teste). A troca de `perfil.apf.tmp` por escrever direto no destino: só difere se o processo morrer no meio da escrita, o que um teste de unidade não reproduz de forma portátil.
+
+### 1.19 `EdgeImage`, `AADetector` e o classificador de perfil
+
+**`EdgeImage`** (`include/cnx/preprocess/EdgeImage.h`). Por pixel, Sobel 3×3 em cada um dos 4 canais (bordas replicadas):
+
+> m = √(Σ_c gx_c² + gy_c²) / (4·255),   n = (cos θ, sin θ),   θ = ½·atan2(2·Jxy, Jxx − Jyy),   J = Σ_c ∇_c ∇_cᵀ
+
+- A magnitude é a mesma da paleta (um degrau de amplitude a num canal dá m = a; preto|branco dá √3). Agora ela é calculada em **inteiros** sobre os 8 bits: uma região chapada dá exatamente 0 (em `double` sobrava 1e-17, que virava normal e crista falsas), e o resultado não depende da ordem das somas. A paleta passou a usar `EdgeImage::sharpnessWeights` (pesos 1/(1 + m/edgeScale)), e `PaletteFinder::edgeMagnitude` virou um atalho para ela.
+- A normal sai do **tensor de estrutura**, não da soma dos gradientes: em vermelho→verde os gradientes dos canais têm sinais opostos e se cancelariam. n é um eixo (o sinal é arbitrário).
+- **Cristas** (`ridges`): m ≥ limiar e máximo local ao longo de n, com m **>** m(p − n) e m **≥** m(p + n) (vizinhos por arredondamento). A assimetria escolhe exatamente um dos dois pixels de um degrau, que têm a mesma magnitude. Num disco duro de raio 20 saem 133 cristas para um perímetro de 126, todas a menos de 1,6 px do contorno e com a normal radial.
+
+**`AADetector`** (§2 da especificação: "perfis de 6 pixels consecutivos atravessando perpendicularmente cada borda forte"). Em cada crista com m ≥ 0,2, lê os pixels nos offsets −3..+2 ao longo de n, **por vizinho mais próximo**: interpolar criaria rampas falsas em bordas duras oblíquas. Com as pontas a = v₀ e b = v₅, cada amostra interna é projetada no eixo a→b (t) e medida a distância a ele (r):
+
+| Perfil | Condição |
+|---|---|
+| Outro | ‖b − a‖ < 0,15; r > 0,15·‖b − a‖ (uma terceira cor, não a mistura das duas tintas); t fora de [−0,15; 1,15] (ringing); retrocesso > 0,15 (textura); ou perfil cortado pela moldura |
+| Degrau | todas as amostras internas num patamar (t ≤ 0,12 ou ≥ 0,88) |
+| Rampa | ≥ 1 amostra intermediária; o número delas (1–4) é a largura da transição |
+
+Medido num disco de raio 26: duro, 170 degraus e 0 rampas; com AA por superamostragem 8×8, 53 degraus e 125 rampas (largura média 0,70, porque cruzamentos que caem no limite do pixel são degraus legítimos); desfocado com σ = 1,5, 176 rampas (largura 2,86).
+
+**As 20 medidas** (`ImageMeasures`), nas famílias que a especificação enumera:
+
+| Família | Medidas |
+|---|---|
+| Cores reais | `significantColors` (cores exatas com ≥ 0,2 %), `flatShare`, `distinctColorRatio` |
+| Histograma 16⁴ | `mainPeaks` (células com ≥ 1 % dos pixels, a > 0,06 uma da outra: ruído leve perto de um limite de faixa não multiplica a tinta), `peakShare` (pixels a ≤ 0,06 de uma *tinta*), `betweenShare` (pixels fora das tintas, a ≤ 0,04 do segmento entre dois picos distintos e longe das pontas: a fração "entre picos" da especificação) |
+| Bordas | `edgeFraction` (m > 0,05), `strongEdgeFraction` (cristas por pixel), `meanEdgeMagnitude`, `interiorNoise` (RMS de m abaixo do limiar de crista: a "energia de sinal") |
+| Antialiasing | `edgeProfiles`, `stepShare`, `rampShare`, `otherShare`, `meanTransitionWidth` (o "perfil de nitidez das bordas") |
+| Erro | `quantizationRmse` contra a paleta de tintas, e `edgeErrorShare`, a parte dele nos pixels de borda (o "erro nas bordas × no interior") |
+| Segmentos preliminares | `quadTreeLeavesPerBlock` (folhas da QuadTree 16×16 por bloco inicial) |
+| Arquivo | `lossyFormat` (.jpg/.jpeg), `hasAlpha` |
+
+*Tinta* = um pico do histograma, ou uma cor exata significativa longe de todos os picos. Assim uma tinta de área pequena (< 1 %) num arquivo sem perdas continua sendo tinta, e o erro dela não parece "espalhado".
+
+**A árvore** (`decideProfile`), escrita à mão. Cada limiar vem do que a medida vale nas famílias do corpus:
+
+1. `mainPeaks > maxColors` → **foto** (a paleta não comportaria as tintas).
+2. `peakShare + betweenShare < 0,90` (JPEG: 0,95) → **foto**. Num logo, quase todo pixel é tinta ou mistura de duas tintas (corpus: logos ≥ 0,950; fotos ≤ 0,059; ruído forte ≤ 0,888).
+3. `quantizationRmse > 0,05` e `edgeErrorShare / edgeFraction < 1,5` → **foto**. Sobra erro, e ele não se concentra nas bordas: é textura ou gradiente. Num logo com AA o erro está todo nas bordas (lift ≥ 5,1 no corpus); ruído de até ~±10 níveis fica abaixo de 0,05.
+4. `betweenShare ≥ 0,01`, ou `rampShare ≥ 0,25` com ≥ 16 perfis válidos → **logo com AA** (o mesmo modo serve a borda desfocada: "com AA ou desfoque", §4 da especificação).
+5. Senão → **logo sem AA**.
+
+**Corpus sintético** (`the_classifier_gets_every_image_of_a_synthetic_corpus_right`, 12 imagens aleatórias 80×72 por família): **120 de 120 corretas**.
+
+| Família | Esperado | Cobertura | Rampas | Lift mín. | rmse máx. |
+|---|---|---|---|---|---|
+| logo chapado (e o mesmo como .jpg) | LogoMed | 1,000 | 0,00 | — | 0,000 |
+| logo com ruído ±5 | LogoMed | 0,985–1,000 | 0,00–0,08 | 0,93 | 0,076 |
+| logo com AA (6×6) | LogoMedAA | 0,992–1,000 | 0,66–1,00 | 5,87 | 0,067 |
+| logo com AA (.jpeg) | LogoMedAA | 0,989–1,000 | 0,65–1,00 | 5,14 | 0,047 |
+| logo desfocado (σ 0,8–1,5) | LogoMedAA | 0,950–1,000 | 1,00 | 2,90 | 0,074 |
+| foto (e .jpg) | PhotoMed | 0,005–0,059 | — | 1,00 | 0,42 |
+| logo com ruído ±40 | PhotoMed | 0,010–0,888 | — | 1,00 | 1,15 |
+| gradiente 2D | PhotoMed | 0,012–0,018 | 0,00 | — | 0,66 |
+
+No ruído ±5, as amostras com rmse acima de 0,05 têm lift de 4 a 16 (faixas finas de uma tinta pequena junto às bordas); as de lift baixo têm rmse ≈ 0,022 (o ruído puro). As duas regras se complementam.
+
+**Ligação ao motor.** O estágio `Classify` do CoreEngine reparte a faixa de progresso entre `preprocess` (0–40 %) e `classify` (40–100 %), que agora recebe o `TaskContext` e pode ser cancelado no meio das medidas. Com `autoClassify = false`, nada é medido.
+
+**Desvios e limites.**
+- **A árvore não é treinada.** A especificação fala de limiares aprendidos (`0.867741`, `0.0134977`, `57.5` cores) num conjunto de referência que não existe aqui. As medidas são reais; os limiares estão em `ClassificationRules`, que uma árvore treinada pode substituir sem tocar nas medidas, e não são parâmetros do usuário (não entram em impressão digital nem em `.apf`).
+- **O nível HIG/MED/LOW não é medido:** a especificação não diz como escolhê-lo. O classificador escolhe a família e devolve o nível MED; os outros nove perfis continuam disponíveis por `forcedProfile`.
+- **A extensão não decide sozinha:** um PNG salvo como .jpg sem ruído é logo. O JPEG só endurece o limiar de cobertura. Artefatos de bloco 8×8 (um JPEG salvo como PNG) não são medidos.
+- **Gradiente suave e de baixo contraste** (poucas faixas do histograma, cada uma um pico, erro < 0,05) passaria como logo posterizado; o gradiente amplo do corpus vai para foto pela regra 1.
+- `SignalImage` e `FlowField` (campo de orientação para traços finos) continuam fora; a orientação por pixel já existe em `EdgeImage::normal`.
+
+**Testes** (`edge_classifier_test`, 12 casos):
+- *EdgeImage:* imagem chapada e vazia; magnitude, normal e uma crista por cruzamento em degraus vertical, horizontal, diagonal e de canais opostos; borda só no alfa; igualdade com os pesos da paleta; cristas de um disco.
+- *Perfis:* degrau, rampa de 1, 2 e 4 amostras, limites da tolerância, terceira cor, mistura de duas cores, ringing, retrocesso, contraste.
+- *Detector:* disco duro, com AA e desfocado; retângulo de bordas inteiras; diagonal com meio-tom (amostragem arredondada); perfis cortados.
+- *Medidas:* valores exatos (cristas, magnitude média, frações, `stepShare`/`otherShare` com perfis cortados, folhas da QuadTree, `hasAlpha`, tinta pequena, imagem sem picos), logo chapado, com AA e foto; agrupamento de picos sob ruído; "entre picos" só para misturas reais (margem das pontas, tubo, separação mínima).
+- *Árvore e classificação:* cada regra e cada fronteira, com limiares diádicos para que a fronteira seja exata; o corpus; o perfil forçado e o cancelamento.
+
+**Teste de mutação** (41 defeitos injetados um por vez, em Release):
+- **Detectados na primeira rodada (34).** EdgeImage: Sobel sem o peso central, sinal trocado numa coluna de `gy`, escala da magnitude, alfa ignorado, ângulo inteiro em vez de meio ângulo, `Jxx` e `Jyy` trocados, supressão não estrita dos dois lados, sem supressão de não máximos, limiar de crista ignorado, peso multiplicando pela escala, vizinho por truncamento na supressão. Perfis: contraste mínimo ignorado, terceira cor aceita, perfil não monótono aceito, patamar baixo contado como intermediário, larguras não contadas, largura média só sobre as rampas. Medidas e árvore: picos vizinhos não agrupados, erro de borda em todo pixel, ruído interior incluindo as bordas, `>` por `>=` em "cores demais", JPEG sem limiar próprio, sem a regra do erro espalhado, *lift* no limite rejeitado, AA sem as misturas, AA sem mínimo de perfis, perfil forçado ignorado, cores exatas pequenas que não viram tinta, folhas sem dividir pelos blocos, `otherShare` zerado, `hasAlpha` não copiado, cristas e magnitude média sem dividir pelos pixels, erro nulo contado como erro todo na borda.
+- **Sobreviventes fechados com testes (7):**
+  - *Ringing em passos pequenos:* `{0; −0,1; −0,2; 1; 1; 1}` e `{0; 0; 1,3; 1,2; 1,1; 1}`. Cada passo cabe na tolerância de retrocesso, então só o limite absoluto rejeita o perfil.
+  - *Amostra do perfil truncada em vez de arredondada:* degrau diagonal com uma linha de meio-tom. Na crista do meio-tom há exatamente 1 amostra intermediária; truncar dá 2.
+  - *"Entre picos":* três testes de valor exato, um por condição:
+    - sem a margem das pontas: cinza escuro com t ≈ 0,08, fora do raio do preto;
+    - com o tubo dobrado: cor a 0,058 do segmento, quando o tubo é de 0,04;
+    - aceitando picos a menos de `minPeakSeparation`: picos a 0,19 de distância.
+    Cada um tem o controle positivo de um cinza médio, que conta como mistura.
+  - *`stepShare` sobre as cristas em vez de sobre os perfis válidos:* imagem com um degrau inteiro e uma borda cortada pela moldura. O valor esperado é `stepShare = 1`, `otherShare = 0,5`.
+  - *Pico de reserva fixo em vez da célula mais cheia (quando nenhuma célula chega a 1 %):* 1585 cores distintas e 15 pixels pretos. O rmse esperado é exatamente a distância de cada pixel ao preto.
+
+  Reexecutados (`-Only`), os 7 foram detectados.
 ---
 
 ## 2. Formulação matemática

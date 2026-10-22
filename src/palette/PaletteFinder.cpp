@@ -9,6 +9,7 @@
 
 #include "cnx/palette/ColorHistogram.h"
 #include "cnx/palette/KMeans.h"
+#include "cnx/preprocess/EdgeImage.h"
 
 namespace cnx {
 namespace {
@@ -44,34 +45,10 @@ double PaletteFinder::score(double error, int colors, double penalty) {
     return std::log(error + 1.0) + static_cast<double>(colors - 2) * penalty;
 }
 
-sla::Array2D<float> PaletteFinder::edgeMagnitude(const sla::Array2D<sla::Rgba8>& image) {
-    const int w = image.width();
-    const int h = image.height();
-    sla::Array2D<float> out(w, h);
-    const auto px = [&](int x, int y) { return toColor(image(std::clamp(x, 0, w - 1), std::clamp(y, 0, h - 1))); };
-    for (int y = 0; y < h; ++y) {
-        for (int x = 0; x < w; ++x) {
-            double sum = 0.0;
-            // Sobel: gx = [-1 0 1; -2 0 2; -1 0 1], gy = gxᵀ, por canal.
-            const std::array<Color4d, 9> n{px(x - 1, y - 1), px(x, y - 1), px(x + 1, y - 1), px(x - 1, y), px(x, y),
-                                           px(x + 1, y),     px(x - 1, y + 1), px(x, y + 1), px(x + 1, y + 1)};
-            for (std::size_t c = 0; c < 4; ++c) {
-                const double gx = -n[0][c] + n[2][c] - 2.0 * n[3][c] + 2.0 * n[5][c] - n[6][c] + n[8][c];
-                const double gy = -n[0][c] - 2.0 * n[1][c] - n[2][c] + n[6][c] + 2.0 * n[7][c] + n[8][c];
-                sum += gx * gx + gy * gy;
-            }
-            out(x, y) = static_cast<float>(std::sqrt(sum) / 4.0);
-        }
-    }
-    return out;
-}
+sla::Array2D<float> PaletteFinder::edgeMagnitude(const sla::Array2D<sla::Rgba8>& image) { return EdgeImage::compute(image).magnitudes(); }
 
 sla::Array2D<float> PaletteFinder::pixelWeights(const sla::Array2D<sla::Rgba8>& image) const {
-    sla::Array2D<float> edge = edgeMagnitude(image);
-    for (int y = 0; y < edge.height(); ++y) {
-        for (int x = 0; x < edge.width(); ++x) edge(x, y) = static_cast<float>(1.0 / (1.0 + static_cast<double>(edge(x, y)) / params_.edgeScale));
-    }
-    return edge;
+    return EdgeImage::compute(image).sharpnessWeights(params_.edgeScale);
 }
 
 PaletteResult PaletteFinder::find(const sla::Array2D<sla::Rgba8>& image) const { return find(image, pixelWeights(image)); }

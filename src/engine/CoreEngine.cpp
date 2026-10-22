@@ -266,8 +266,11 @@ RunOutcome runPipeline(const RunConfig& cfg, Stage target, const std::stop_token
                         break;
                     }
                     case Stage::Classify: {
-                        auto pre = std::make_shared<PreprocessedImage>(preprocess(*next->source, cfg.params.preprocess, ctx));
-                        auto cls = std::make_shared<ImageClassification>(classify(*pre, *next->source, cfg.params.classifier, cfg.params.palette));
+                        TaskContext preCtx = ctx.sub(0.0, 0.4);
+                        auto pre = std::make_shared<PreprocessedImage>(preprocess(*next->source, cfg.params.preprocess, preCtx));
+                        TaskContext clsCtx = ctx.sub(0.4, 1.0);
+                        auto cls = std::make_shared<ImageClassification>(
+                            classify(*pre, *next->source, cfg.params.classifier, cfg.params.palette, clsCtx));
                         next->preprocessed = std::move(pre);
                         next->classification = std::move(cls);
                         break;

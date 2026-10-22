@@ -1,4 +1,5 @@
-// tests/unit/preprocess_classify_test.cpp — pré-processamento (alfa, média de área, gaussiana) e o classificador provisório.
+// tests/unit/preprocess_classify_test.cpp — pré-processamento (alfa, média de área, gaussiana) e casos básicos do
+// classificador (o corpus e as medidas estão em edge_classifier_test).
 #include <algorithm>
 #include <cmath>
 #include <numbers>
@@ -168,7 +169,7 @@ CNX_TEST(preprocess_validates_its_inputs_and_honors_cancellation) {
     CHECK_THROWS(cnx::CancelTaskException, (void)cnx::preprocess(source(Array2D<Rgba8>(4, 4)), cnx::PreprocessParams{}, cancelled));
 }
 
-CNX_TEST(the_provisional_classifier_follows_its_three_rules) {
+CNX_TEST(the_classifier_separates_flat_logos_aa_logos_and_photos) {
     const cnx::PaletteParams palette;
     cnx::TaskContext ctx;
     const cnx::PreprocessParams pp;
@@ -186,8 +187,9 @@ CNX_TEST(the_provisional_classifier_follows_its_three_rules) {
     CHECK(logo.profile == cnx::ImageProfile::LogoMed && logo.automatic);
     CHECK(logo.measures.significantColors == 4 && logo.measures.flatShare >= 0.99);
     CHECK(logo.measures.edgeFraction > 0.0 && logo.measures.edgeFraction < 0.2);  // as duas linhas de quadrante
-    // O mesmo conteúdo como JPEG é foto (ruído de compressão): o formato decide.
-    CHECK(classifyImage(flat, ".JPG").profile == cnx::ImageProfile::PhotoMed);
+    // O mesmo conteúdo marcado como JPEG continua logo: decide o conteúdo (sem ruído de compressão aqui);
+    // a extensão só endurece o limiar de cobertura (edge_classifier_test cobre o JPEG com ruído).
+    CHECK(classifyImage(flat, ".JPG").profile == cnx::ImageProfile::LogoMed);
     CHECK(classifyImage(flat, ".jpeg").measures.lossyFormat);
 
     // Logo com antialiasing: disco com anel de transição (~4 %).
@@ -232,7 +234,7 @@ CNX_TEST(the_provisional_classifier_follows_its_three_rules) {
         const int n = palette.maxColors + extra;
         Array2D<Rgba8> stripes(8 * n, 16);
         for (int y = 0; y < 16; ++y) {
-            for (int x = 0; x < 8 * n; ++x) stripes(x, y) = gray(10 * (x / 8), 255);
+            for (int x = 0; x < 8 * n; ++x) stripes(x, y) = gray(20 * (x / 8), 255);  // 20 níveis: um pico por cor
         }
         const cnx::ImageClassification st = classifyImage(stripes, ".png");
         CHECK(st.measures.significantColors == n);

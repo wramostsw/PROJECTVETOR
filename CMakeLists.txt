@@ -17,6 +17,8 @@ add_library(cnx_core
   src/engine/ParameterFiler.cpp
   src/export/ExporterSettings.cpp
   src/preprocess/Preprocessor.cpp
+  src/preprocess/EdgeImage.cpp
+  src/preprocess/AADetector.cpp
   src/classify/Classifier.cpp
   src/segment/PixelMap.cpp
   src/segment/QuadTree.cpp
@@ -44,7 +46,7 @@ foreach(test_name header_smoke_test pixel_map_test pixel_segmenter_test vector_i
                  generative_model_test energy_terms_test optimizer_test crossing_guard_test
                  contour_smoother_test bezier_curve_test bezier_fitter_test
                  sub_pixel_segmenter_test palette_test weights_finder_test
-                 parameters_test preprocess_classify_test core_engine_test parameter_filer_test)
+                 parameters_test preprocess_classify_test core_engine_test parameter_filer_test edge_classifier_test)
   add_executable(${test_name} tests/unit/${test_name}.cpp)
   target_link_libraries(${test_name} PRIVATE cnx_core)
   add_test(NAME ${test_name} COMMAND ${test_name})

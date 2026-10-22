@@ -1,7 +1,7 @@
 // cnx/palette/PaletteFinder.h — extração da paleta oficial da imagem (§3, docs §1.16).
 //
 //   1. peso do pixel = 1 / (1 + borda/edgeScale): pixels de transição valem menos, para o
-//      antialiasing não criar cores falsas (EdgeImage = gradiente de Sobel nos 4 canais);
+//      antialiasing não criar cores falsas (cnx/preprocess/EdgeImage.h: Sobel nos 4 canais);
 //   2. histograma esparso 16⁴ ponderado (média e espalhamento por célula);
 //   3. para K = minColors..maxColors: sementes (picos + k-means++ com myPrng) e k-means sobre as células;
 //   4. nota(K) = log(erro + 1) + (K − 2)·penalidade, com o erro quadrático médio por unidade de peso
@@ -48,10 +48,10 @@ public:
     /// forcedNumColors < 1.
     PaletteFinder(PaletteParams params, std::uint64_t seed);
 
-    /// Magnitude da borda: ‖∇‖ de Sobel nos 4 canais (canais em [0, 1]), dividida por 4, de modo que um
-    /// degrau de amplitude a em um canal dá a. Bordas replicadas.
+    /// Magnitude da borda (EdgeImage::magnitudes): ‖∇‖ de Sobel nos 4 canais (canais em [0, 1]), dividida
+    /// por 4, de modo que um degrau de amplitude a em um canal dá a. Bordas replicadas.
     static sla::Array2D<float> edgeMagnitude(const sla::Array2D<sla::Rgba8>& image);
-    /// Pesos 1 / (1 + borda/edgeScale).
+    /// Pesos 1 / (1 + borda/edgeScale) (EdgeImage::sharpnessWeights).
     sla::Array2D<float> pixelWeights(const sla::Array2D<sla::Rgba8>& image) const;
 
     /// nota = log(erro + 1) + (cores − 2)·penalidade.
