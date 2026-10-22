@@ -49,7 +49,12 @@ int main(int argc, char** argv) {
                 params.classifier.autoClassify = false;
                 params.classifier.forcedProfile = static_cast<cnx::ImageProfile>(value);
             } else {
+                if (value < 1) {
+                    std::fprintf(stderr, "--cores precisa ser >= 1\n");
+                    return 2;
+                }
                 params.palette.forcedNumColors = value;
+                if (value > params.palette.maxColors) params.palette.maxColors = value;  // o K forçado é limitado por maxColors
             }
         } else {
             files.push_back(arg);
