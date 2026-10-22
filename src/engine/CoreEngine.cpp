@@ -294,7 +294,7 @@ RunOutcome runPipeline(const RunConfig& cfg, Stage target, const std::stop_token
                     case Stage::SmoothContours: {
                         TraceResult traced = BoundaryTracer().trace(*next->segmentation, stop);
                         std::optional<GenerativeModel> model;
-                        if (anyGenerative(eff.smooth)) model.emplace(GenerativeModel::targetFrom(next->preprocessed->image));
+                        if (anyGenerative(eff.smooth)) model.emplace(next->preprocessed->signal.premultiplied());  // float, sem quantizar
                         ContourSmoother(eff.smooth, model ? &*model : nullptr).run(traced.image, ctx);
                         next->smoothed = std::make_shared<const VectorImage>(std::move(traced.image));
                         break;

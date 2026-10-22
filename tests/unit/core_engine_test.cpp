@@ -554,6 +554,34 @@ CNX_TEST(a_one_pixel_diagonal_stroke_survives_the_whole_pipeline) {
     }
 }
 
+CNX_TEST(a_transparent_background_is_one_color_whatever_rgb_hides_under_it) {
+    // O logo chapado com o fundo branco trocado por transparente; cada pixel invisível esconde um RGB aleatório
+    // (é o que editores deixam). Pelo sinal pré-multiplicado, todo invisível é (0, 0, 0, 0): uma cor só.
+    Array2D<Rgba8> img = flatLogo();
+    cnxtest::SplitMix64 rng{6201};
+    for (int y = 0; y < img.height(); ++y) {
+        for (int x = 0; x < img.width(); ++x) {
+            if (img(x, y) == rgb(255, 255, 255)) {
+                img(x, y) = {static_cast<std::uint8_t>(rng.below(256)), static_cast<std::uint8_t>(rng.below(256)), static_cast<std::uint8_t>(rng.below(256)), 0};
+            }
+        }
+    }
+    Rig rig;
+    rig.loader->image = img;
+    CHECK(rig.run() == RunStatus::Completed);
+    const auto snap = rig.engine.snapshot();
+    std::printf("  fundo transparente: perfil %d, %zu cores, %zu regiões\n", static_cast<int>(snap->classification->profile),
+                snap->palette->colors.size(), snap->segmentation->forest().rootCount());
+    CHECK(snap->classification->profile == cnx::ImageProfile::LogoMed);
+    CHECK(snap->palette->exact && snap->palette->colors.size() == 3);
+    CHECK(snap->segmentation->forest().rootCount() == 3);  // fundo transparente, vermelho, azul
+    bool transparentFace = false;
+    for (cnx::FaceId f = 1; f < static_cast<cnx::FaceId>(snap->fitted->faceCount()); ++f) {
+        transparentFace = transparentFace || snap->fitted->face(f).color == sla::Rgba{0.0f, 0.0f, 0.0f, 0.0f};
+    }
+    CHECK(transparentFace && snap->fitted->validate().ok);
+}
+
 CNX_TEST(manual_segmentation_edits_become_a_pseudo_parameter) {
     Rig rig;
     CHECK(rig.run() == RunStatus::Completed);

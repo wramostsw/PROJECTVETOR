@@ -13,8 +13,9 @@
 //     mesma passada. Exato exceto quando um segmento é colinear a uma linha da grade (medida nula).
 //
 // As cores das faces são fixas; as variáveis são as posições dos nós. A cor de uma face é
-// Face::color (não pré-multiplicada); a mistura é linear nos 4 canais, no espaço em que a imagem
-// alvo e as cores das faces foram dadas.
+// Face::color (straight); o modelo a pré-multiplica, (r·a, g·a, b·a, a), e mistura linearmente nos 4
+// canais nesse espaço, que é o do alvo (SignalImage, docs §1.22): uma borda com AA entre uma face opaca e
+// uma transparente é cobertura × cor pré-multiplicada. Para faces opacas nada muda.
 //
 // Thread-safety: todos os métodos são const e sem estado mutável; podem rodar em paralelo.
 #pragma once
@@ -47,13 +48,14 @@ struct GenerativeStats {
 
 class GenerativeModel {
 public:
-    /// `target`: imagem original (sem desfoque), RGBA em [0, 1]. Pesos 1 em todos os pixels.
+    /// `target`: imagem original (sem desfoque), RGBA PRÉ-MULTIPLICADO em [0, 1] (SignalImage::premultiplied).
+    /// Pesos 1 em todos os pixels.
     /// Memória: ≈ 48 bytes por pixel para as somas prefixadas. Lança std::invalid_argument se vazia.
     explicit GenerativeModel(sla::Array2D<sla::Rgba> target);
     /// `weights` ≥ 0 e finitos, mesma dimensão de `target` (w_p = 0 ignora o pixel).
     GenerativeModel(sla::Array2D<sla::Rgba> target, const sla::Array2D<float>& weights);
 
-    /// Conversão da entrada decodificada (8 bits) para o alvo em ponto flutuante.
+    /// Conversão da entrada decodificada (8 bits straight) para o alvo em ponto flutuante pré-multiplicado.
     static sla::Array2D<sla::Rgba> targetFrom(const sla::Array2D<sla::Rgba8>& image);
 
     int width() const noexcept { return target_.width(); }

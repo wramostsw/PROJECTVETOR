@@ -54,13 +54,19 @@ constexpr std::size_t ux(std::int32_t i) noexcept { return static_cast<std::size
 
 Color4 toColor4(const sla::Rgba& c) noexcept { return {c.r, c.g, c.b, c.a}; }
 
+/// Cor straight da face → pré-multiplicada, como o alvo: a mistura por cobertura é linear nesse espaço.
+Color4 premultiplied(const sla::Rgba& c) noexcept {
+    const double a = c.a;
+    return {c.r * a, c.g * a, c.b * a, a};
+}
+
 double dot4(const Color4& a, const Color4& b) noexcept { return a[0] * b[0] + a[1] * b[1] + a[2] * b[2] + a[3] * b[3]; }
 
 bool isZero(const Color4& c) noexcept { return c[0] == 0.0 && c[1] == 0.0 && c[2] == 0.0 && c[3] == 0.0; }
 
 /// Cor do modelo: o exterior da imagem é transparente (0).
 Color4 faceColor(const VectorImage& image, FaceId f) {
-    return f == kExteriorFace ? Color4{} : toColor4(image.face(f).color);
+    return f == kExteriorFace ? Color4{} : premultiplied(image.face(f).color);
 }
 
 // ---------------------------------------------------------------- migalhas de pão (§2.2.1)
@@ -332,9 +338,15 @@ GenerativeModel::GenerativeModel(sla::Array2D<sla::Rgba> target, const sla::Arra
 }
 
 sla::Array2D<sla::Rgba> GenerativeModel::targetFrom(const sla::Array2D<sla::Rgba8>& image) {
+    // Pré-multiplica, a mesma conversão de SignalImage::fromStraight (o núcleo vetorial não depende do
+    // pré-processamento).
     sla::Array2D<sla::Rgba> out(image.width(), image.height());
     for (int y = 0; y < image.height(); ++y) {
-        for (int x = 0; x < image.width(); ++x) out(x, y) = sla::toRgba(image(x, y));
+        for (int x = 0; x < image.width(); ++x) {
+            const sla::Rgba8 c = image(x, y);
+            const double a = c.a / 255.0;
+            out(x, y) = {static_cast<float>(c.r / 255.0 * a), static_cast<float>(c.g / 255.0 * a), static_cast<float>(c.b / 255.0 * a), static_cast<float>(a)};
+        }
     }
     return out;
 }

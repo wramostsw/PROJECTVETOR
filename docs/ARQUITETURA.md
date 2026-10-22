@@ -82,7 +82,7 @@ cnx-praia/
 │  ├─ sla/            Vec.h  Array.h  BezierCurve.h  [linalg.h  Prng.h  Timers.h  Memory.h]
 │  └─ cnx/
 │     ├─ engine/      CoreEngine.h  Parameters.h (inclui ParameterFiler)  Fingerprint.h  TaskContext.h
-│     ├─ preprocess/  Preprocessor.h  EdgeImage.h  AADetector.h  FlowField.h  [SignalImage.h]
+│     ├─ preprocess/  Preprocessor.h  SignalImage.h  EdgeImage.h  AADetector.h  FlowField.h
 │     ├─ classify/    Classifier.h (medidas + árvore)
 │     ├─ palette/     ColorHistogram.h  KMeans.h  PaletteFinder.h  WeightsFinder.h
 │     ├─ segment/     PixelMap.h  QuadTree.h  PixelSegmenter.h  SubPixelSegmenter.h
@@ -98,7 +98,7 @@ cnx-praia/
 │                      Optimizer.cpp, CrossingGuard.cpp, ContourSmoother.cpp; fit/BezierFitter.cpp;
 │                      sla/BezierCurve.cpp; palette/*.cpp; segment/SubPixelSegmenter.cpp;
 │                      engine/CoreEngine.cpp, Parameters.cpp, ParameterFiler.cpp; preprocess/Preprocessor.cpp,
-│                      EdgeImage.cpp, AADetector.cpp, FlowField.cpp;
+│                      SignalImage.cpp, EdgeImage.cpp, AADetector.cpp, FlowField.cpp;
 │                      classify/Classifier.cpp; export/ExporterSettings.cpp)
 ├─ qt/                EngineController.{h,cpp}  QImageLoader.{h,cpp}
 ├─ tests/
@@ -109,7 +109,7 @@ cnx-praia/
 │  │                  contour_smoother_test, bezier_curve_test, bezier_fitter_test,
 │  │                  sub_pixel_segmenter_test, palette_test, weights_finder_test,
 │  │                  parameters_test, preprocess_classify_test, core_engine_test, parameter_filer_test,
-│  │                  edge_classifier_test, flow_field_test
+│  │                  edge_classifier_test, flow_field_test, signal_image_test
 │  └─ golden/         imagens + SVG de referência (regressão)
 ├─ bench/             (Google Benchmark: k-means, segmentação, CG, ajuste Bézier)
 └─ third_party/       ann/  dxflib/
@@ -753,7 +753,7 @@ No ruído ±5, as amostras com rmse acima de 0,05 têm lift de 4 a 16 (faixas fi
 - **O nível HIG/MED/LOW não é medido:** a especificação não diz como escolhê-lo. O classificador escolhe a família e devolve o nível MED; os outros nove perfis continuam disponíveis por `forcedProfile`.
 - **A extensão não decide sozinha:** um PNG salvo como .jpg sem ruído é logo. O JPEG só endurece o limiar de cobertura. Artefatos de bloco 8×8 (um JPEG salvo como PNG) não são medidos.
 - **Gradiente suave e de baixo contraste** (poucas faixas do histograma, cada uma um pico, erro < 0,05) passaria como logo posterizado; o gradiente amplo do corpus vai para foto pela regra 1.
-- `SignalImage` continua fora. O `FlowField` (campo de orientação para traços finos) está na §1.20; o classificador não o usa.
+- O `FlowField` (campo de orientação para traços finos) está na §1.20, e a `SignalImage` na §1.22; o classificador não usa nenhum dos dois. A "energia de sinal" da especificação continua sendo `interiorNoise`.
 
 **Testes** (`edge_classifier_test`, 12 casos):
 - *EdgeImage:* imagem chapada e vazia; magnitude, normal e uma crista por cruzamento em degraus vertical, horizontal, diagonal e de canais opostos; borda só no alfa; igualdade com os pesos da paleta; cristas de um disco.
@@ -915,6 +915,61 @@ A cor escolhida é sempre a de pelo menos um pixel da região. Os pixels fora da
 - *Votos:* pontes votando, sem a reserva, voto sem a cor do pixel, `nearest` sem trocar o melhor.
 - *Desempates:* empate sem a média, empate exato indo para o maior índice, maioria não estrita.
 - *Resultado e validação:* cor sempre a primeira da paleta, dimensões não conferidas, paleta vazia aceita.
+
+### 1.22 `SignalImage`: o sinal pré-multiplicado
+
+A especificação só dá o nome do módulo. Na arquitetura (§0, item 2, e §1.4), ele é a imagem achatada e reamostrada **antes** do desfoque, que serve de alvo ao modelo gerador. Ao implementá-lo, encontrei três defeitos no pré-processamento que existia. A média de área, o desfoque e a ampliação eram feitos em RGBA **straight** (não pré-multiplicado), em 8 bits:
+1. **Franja.** A média mistura o RGB escondido sob alfa 0, que não é visível. Vermelho opaco ao lado de um transparente vira, ao reduzir 2 → 1, rosa (255, 128, 128, 128) se o RGB escondido é branco, vermelho-escuro (128, 0, 0, 128) se é preto, e (136, 100, 45, 128) se é um verde qualquer. O certo é (255, 0, 0, 128): meia cobertura de vermelho puro.
+2. **Fundo transparente partido.** Pixels invisíveis com RGB diferentes por baixo eram cores diferentes. Num logo com fundo transparente em que cada pixel invisível esconde um RGB aleatório, como editores costumam deixar, o fundo não era uma cor exata: a paleta exata falhava, e o fundo se dividia em regiões.
+3. **Alvo quantizado.** O alvo do modelo gerador era a imagem de 8 bits já arredondada. A média exata de uma redução (por exemplo 100,5 níveis) se perdia.
+
+**O módulo** ([SignalImage.h](../include/cnx/preprocess/SignalImage.h)):
+- Cada pixel é (r·a, g·a, b·a, a) em float. É a grandeza que se soma fisicamente: cobertura, média de área e desfoque são combinações lineares dela, e todo pixel invisível é (0, 0, 0, 0).
+- `fromStraight` pré-multiplica, em double, e guarda em float. `straight` e `toStraight8` desfazem a pré-multiplicação. Um alfa que arredonda para 0 vira (0, 0, 0, 0). A ida e volta é exata para todos os 256 × 256 pares (valor, alfa) com alfa > 0.
+- Os três filtros saem de um filtro separável em double, com pesos por índice ("taps"):
+  - média de área exata: conserva Σ sinal · área até 1e-5;
+  - bilinear com centros de pixel: t limitado a [0, 1], sem extrapolar nas bordas;
+  - gaussiana de raio ⌈3σ⌉, com pesos exp(−k²/2σ²) normalizados e bordas replicadas.
+
+**Ligação:**
+- O `preprocess` achata o alfa constante, como antes, e então pré-multiplica, reamostra e desfoca **no sinal**.
+  - `PreprocessedImage::signal` é o sinal sem desfoque.
+  - `image` é `signal.toStraight8()`.
+  - `smooth` é o sinal desfocado, convertido para 8 bits.
+- `resampleArea` e `gaussianBlur` (8 bits) continuam como atalhos sobre a `SignalImage`, sem cópia da conta.
+- **GenerativeModel.** O CoreEngine usa `signal.premultiplied()` como alvo: float, sem quantizar. O modelo passou a **pré-multiplicar as cores das faces**: ĉ_p = Σ_f a_p(f)·(r·a, g·a, b·a, a)_f. É o espaço em que a mistura por cobertura é linear, e o mesmo do alvo. `targetFrom` também pré-multiplica. Para faces e imagens opacas nada muda; os testes de cobertura, energia e gradiente foram reescritos com as expectativas pré-multiplicadas (com o alfa = 1 nos casos de forma fechada).
+- Paleta, segmentação, classificador e exportação continuam em straight. A cor exportada de uma face é a cor straight, que é o que SVG, PDF e EPS esperam.
+
+**Medido:**
+- Borda vertical exata em x = 10,5 entre vermelho opaco e transparente: energia **0,000055** com o alvo pré-multiplicado (só o arredondamento de 128/255 contra ½), contra **68,9** com o alvo straight.
+- Pelo motor, o logo chapado com o fundo trocado por transparente com RGB escondido aleatório dá perfil LogoMed, paleta exata de 3 cores e 3 regiões, com uma face (0, 0, 0, 0).
+
+**Limites:**
+- O espaço de cor continua sendo o sRGB codificado. Média e AA em luz linear (gama) seriam mais físicos, mas os rasterizadores comuns misturam no sRGB codificado. Mudar isso exige medir contra imagens de referência.
+- A paleta e a segmentação medem distâncias em straight. Para alfas parciais, a distância em pré-multiplicado seria mais coerente, mas não há caso medido que a justifique.
+
+**Testes** (`signal_image_test`, 6 casos):
+- *Pré-multiplicação:* ida e volta de 8 bits exaustiva; `straight` e o invisível; imagem vazia.
+- *Média de área:* sem vazamento do RGB escondido (branco, preto e um verde), contra a média straight; média ponderada pelo alfa; conservação, valor exato de um pixel com razão não inteira, cópia no mesmo tamanho, validação e o meio nível que o 8 bits perderia.
+- *Gaussiana e bilinear:* desfoque sem halo branco; conservação de um impulso; σ ≤ 0, NaN e ∞; raio exato; bilinear entre opaco e transparente, sem extrapolar nas bordas.
+- *`preprocess`:* sinal e 8 bits derivados dele; transparente canônico; bordas sem franja; mesmos pixels sem reamostragem; σ infinito recusado.
+- *Modelo:* alvo pré-multiplicado contra straight; `targetFrom` igual ao sinal; face semitransparente uniforme com energia 0.
+- *`core_engine_test`:* fundo transparente com RGB escondido aleatório.
+
+**Teste de mutação** (19 defeitos injetados um por vez, em Release):
+- **Detectados na primeira rodada (13):**
+  - *Pré-multiplicação:* vermelho sem pré-multiplicar, 8 bits sem desfazer a pré-multiplicação, invisível não canônico, `straight` do invisível, arredondamento por truncamento.
+  - *Filtros:* área sem dividir por r, área sem o último pixel parcial, bilinear extrapolando, gaussiana não normalizada, sem a passada vertical, σ infinito aceito.
+  - *Modelo:* face sem pré-multiplicar, `targetFrom` sem pré-multiplicar.
+- **Sobreviventes fechados com testes (4):**
+  - raio de 2σ e σ no lugar de σ²: perfil exato da gaussiana sobre um impulso (eixo e diagonal) e zero a partir do raio;
+  - área aceitando ampliar na altura: a validação de `h`;
+  - `preprocess` reduzindo pelos 8 bits: o meio nível (100,5) que tem de sobreviver no sinal.
+
+  Reexecutados (`-Only`), os 4 foram detectados.
+- **Equivalentes, mantidos (2):**
+  - o limite [0, 1] de `straight`: com c = 255, r·a e a arredondam para o mesmo float, e os filtros usam os mesmos pesos em todos os canais. Por isso r ≤ a vale, e o limite é só uma proteção.
+  - o CoreEngine usar o alvo de 8 bits no lugar do sinal: a diferença é a quantização (≤ ½ nível), abaixo da tolerância dos testes do motor. A exatidão está coberta no teste do `preprocess` (o meio nível), que é o sinal que o CoreEngine repassa.
 
 ---
 

@@ -157,9 +157,11 @@ CNX_TEST(unjittered_staircase_covers_whole_pixels_exactly) {
     double worst = 0.0;
     for (int y = 0; y < model.height(); ++y) {
         for (int x = 0; x < model.width(); ++x) {
+            // A síntese é pré-multiplicada (as cenas têm alfa aleatório).
             const sla::Rgba& c = s.image.face(s.pixelFaces(x, y)).color;
-            worst = std::max({worst, std::abs(synth(x, y)[0] - c.r), std::abs(synth(x, y)[1] - c.g),
-                              std::abs(synth(x, y)[2] - c.b), std::abs(synth(x, y)[3] - c.a)});
+            const double a = c.a;
+            worst = std::max({worst, std::abs(synth(x, y)[0] - c.r * a), std::abs(synth(x, y)[1] - c.g * a),
+                              std::abs(synth(x, y)[2] - c.b * a), std::abs(synth(x, y)[3] - a)});
         }
     }
     CHECK_CTX(worst < 1e-12, std::to_string(worst));
@@ -178,12 +180,12 @@ CNX_TEST(render_is_the_area_weighted_mix_of_face_colors) {
     for (FaceId f = 1; f < static_cast<FaceId>(s.image.faceCount()); ++f) {
         Array2D<double> cov;
         model.faceCoverage(s.image, f, cov);
-        const sla::Rgba& c = s.image.face(f).color;
+        const sla::Rgba& c = s.image.face(f).color;  // misturada pré-multiplicada: cobertura × (r·a, g·a, b·a, a)
         for (int y = 0; y < model.height(); ++y) {
             for (int x = 0; x < model.width(); ++x) {
-                expected(x, y)[0] += cov(x, y) * toD(c.r);
-                expected(x, y)[1] += cov(x, y) * toD(c.g);
-                expected(x, y)[2] += cov(x, y) * toD(c.b);
+                expected(x, y)[0] += cov(x, y) * toD(c.r) * toD(c.a);
+                expected(x, y)[1] += cov(x, y) * toD(c.g) * toD(c.a);
+                expected(x, y)[2] += cov(x, y) * toD(c.b) * toD(c.a);
                 expected(x, y)[3] += cov(x, y) * toD(c.a);
             }
         }
@@ -365,9 +367,10 @@ CNX_TEST(gradient_of_an_island_with_a_closed_edge_matches_finite_differences) {
 
 CNX_TEST(gradient_has_the_closed_form_of_a_single_pixel_edge) {
     // Um segmento horizontal dentro de uma única linha: ∂a/∂P_k = n·∫(1−t) com n = (0, −Δx).
-    // Imagem 1×1 com a face da esquerda de cor 1 no canal 0 e exterior 0; alvo 0 → E = ĉ².
+    // Imagem 1×1 com a face da esquerda vermelha opaca, (1, 0, 0, 1) também pré-multiplicada, e exterior 0;
+    // alvo 0 → E = ĉ_r² + ĉ_a² = 2ĉ² (os canais r e a têm a mesma cobertura).
     VectorImage v(1.0, 1.0);
-    const cnx::FaceId inside = v.addFace(sla::Rgba{1.0f, 0.0f, 0.0f, 0.0f}, 0);
+    const cnx::FaceId inside = v.addFace(sla::Rgba{1.0f, 0.0f, 0.0f, 1.0f}, 0);
     const NodeId a = v.addNode({0.0, 0.25});
     const NodeId b = v.addNode({1.0, 0.25});
     const NodeId c = v.addNode({1.0, 1.0});
@@ -379,20 +382,20 @@ CNX_TEST(gradient_has_the_closed_form_of_a_single_pixel_edge) {
     const GenerativeModel model(Array2D<sla::Rgba>(1, 1));
     std::vector<Vec2> grad(v.nodeCount());
     const double e = model.energyAndGradient(v, grad);
-    CHECK(std::abs(e - 0.75 * 0.75) < 1e-12);  // cobertura 0,75 → ĉ_r = 0,75
-    // A aresta de cima y = 0.25 desloca-se com a e b: dE/da_y = 2·ĉ·(∂a/∂a_y), ∂a/∂a_y = −∫(1−t)dt·|Δx| = −0.5.
+    CHECK(std::abs(e - 2.0 * 0.75 * 0.75) < 1e-12);  // cobertura 0,75 → ĉ_r = ĉ_a = 0,75
+    // A aresta de cima y = 0.25 desloca-se com a e b: dE/da_y = 2·2ĉ·(∂a/∂a_y), ∂a/∂a_y = −∫(1−t)dt·|Δx| = −0.5.
     // O segmento a→b tem n = (Δy, −Δx) = (0, −1); a derivada da área em relação a a_y é n_y·½ = −0,5.
-    CHECK(std::abs(grad[static_cast<std::size_t>(a)].y - 2.0 * 0.75 * -0.5) < 1e-12);
-    CHECK(std::abs(grad[static_cast<std::size_t>(b)].y - 2.0 * 0.75 * -0.5) < 1e-12);
+    CHECK(std::abs(grad[static_cast<std::size_t>(a)].y - 2.0 * 2.0 * 0.75 * -0.5) < 1e-12);
+    CHECK(std::abs(grad[static_cast<std::size_t>(b)].y - 2.0 * 2.0 * 0.75 * -0.5) < 1e-12);
     // Em x: só o segmento d→a (vertical, Δ = (0, −0,75), n = (−0,75, 0)) move a área com a_x: ∫t dt = ½.
-    CHECK(std::abs(grad[static_cast<std::size_t>(a)].x - 2.0 * 0.75 * -0.375) < 1e-12);
+    CHECK(std::abs(grad[static_cast<std::size_t>(a)].x - 2.0 * 2.0 * 0.75 * -0.375) < 1e-12);
 }
 
 CNX_TEST(edges_left_of_the_image_still_cover_the_pixels_to_their_right) {
     // Retângulo de x = −2 a x = 2 numa imagem 4×4: a aresta esquerda é exatamente vertical e fica fora
     // da imagem. Os pixels das colunas 0 e 1 devem ficar totalmente cobertos; os das colunas 2 e 3, não.
     VectorImage v(4.0, 4.0);
-    const cnx::FaceId face = v.addFace(sla::Rgba{1.0f, 0.0f, 0.0f, 0.0f}, 0);
+    const cnx::FaceId face = v.addFace(sla::Rgba{1.0f, 0.0f, 0.0f, 1.0f}, 0);
     const NodeId a = v.addNode({-2.0, 0.0}, cnx::NodeFlag::LoopAnchor);
     const std::array<NodeId, 5> loop{a, v.addNode({2.0, 0.0}), v.addNode({2.0, 4.0}), v.addNode({-2.0, 4.0}), a};
     (void)v.addEdge(loop, face, cnx::kExteriorFace);
@@ -406,11 +409,11 @@ CNX_TEST(edges_left_of_the_image_still_cover_the_pixels_to_their_right) {
                       std::to_string(x) + "," + std::to_string(y) + ": " + std::to_string(synth(x, y)[0]));
         }
     }
-    // Alvo zero: E = 8 pixels cobertos com ĉ_r = 1.
-    CHECK(std::abs(model.energy(v) - 8.0) < 1e-12);
+    // Alvo zero: E = 8 pixels cobertos com ĉ_r = ĉ_a = 1.
+    CHECK(std::abs(model.energy(v) - 16.0) < 1e-12);
     // Segmento inclinado que cruza x = 0: só a parte com x ≥ 0 toca pixels, a de x < 0 cobre à direita.
     VectorImage w(4.0, 4.0);
-    const cnx::FaceId f2 = w.addFace(sla::Rgba{1.0f, 0.0f, 0.0f, 0.0f}, 0);
+    const cnx::FaceId f2 = w.addFace(sla::Rgba{1.0f, 0.0f, 0.0f, 1.0f}, 0);
     const NodeId b = w.addNode({-1.0, 0.0}, cnx::NodeFlag::LoopAnchor);
     const std::array<NodeId, 5> tri{b, w.addNode({5.0, 0.0}), w.addNode({5.0, 4.0}), w.addNode({-1.0, 4.0}), b};
     (void)w.addEdge(tri, f2, cnx::kExteriorFace);
