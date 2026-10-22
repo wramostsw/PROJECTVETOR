@@ -152,16 +152,21 @@ double spacingEnergy(const VectorImage& image, const SmoothTopology& topology, d
         const Vec2 b = pos[ux(t.next)] - pos[ux(t.mid)];
         const double la = sla::norm(a);
         const double lb = sla::norm(b);
-        const double s = lb - la;
+        const double total = la + lb;
+        if (total < 1e-12) continue;
+        // Diferença RELATIVA de comprimento, s ∈ [−1, 1]: independe da escala. A forma absoluta (lb − la)² custava
+        // (34 − 3)² = 961 por canto de um fio de 34 × 3 px, porque o tracer remove os nós colineares e deixa
+        // segmentos de comprimentos muito diferentes; o suavizador achatava o fio num quadrado (docs §1.25).
+        const double s = (lb - la) / total;
         energy += s * s;
         if (grad.empty() || la < 1e-12 || lb < 1e-12) continue;
-        // ∂s/∂P_{k+1} = b̂,  ∂s/∂P_k = −b̂ − â,  ∂s/∂P_{k−1} = â.
+        // ∂s/∂la = −2·lb/(la + lb)², ∂s/∂lb = +2·la/(la + lb)²; ∂la/∂P_k = â, ∂la/∂P_{k−1} = −â, ∂lb/∂P_{k+1} = b̂, ∂lb/∂P_k = −b̂.
         const Vec2 ah = a / la;
         const Vec2 bh = b / lb;
-        const double f = weight * 2.0 * s;
-        grad[ux(t.prev)] += ah * f;
-        grad[ux(t.mid)] += (bh + ah) * (-f);
-        grad[ux(t.next)] += bh * f;
+        const double f = weight * 2.0 * s * 2.0 / (total * total);
+        grad[ux(t.prev)] += ah * (f * lb);
+        grad[ux(t.mid)] += ah * (-f * lb) + bh * (-f * la);
+        grad[ux(t.next)] += bh * (f * la);
     }
     return weight * energy;
 }
@@ -281,6 +286,56 @@ Arm walkArm(std::span<const Vec2> pts, std::size_t k, bool closed, int dir, doub
 }
 
 }  // namespace
+
+std::vector<Vec2> smoothChain(std::span<const Vec2> pts, bool closed, double h) {
+    const std::size_t n = pts.size();
+    std::vector<Vec2> out(pts.begin(), pts.end());
+    if (!(h > 0.0) || n < 3) return out;
+    // Comprimento de arco acumulado s[i] até o nó i; numa cadeia fechada há um segmento extra de n−1 até 0.
+    std::vector<double> s(n + 1, 0.0);
+    for (std::size_t i = 1; i <= n; ++i) {
+        const bool wrap = i == n;
+        if (wrap && !closed) break;
+        s[i] = s[i - 1] + sla::norm(pts[wrap ? 0 : i] - pts[i - 1]);
+    }
+    const double total = closed ? s[n] : s[n - 1];
+    if (!(total > 0.0)) return out;
+    // ∫ P ds sobre [a, b] (a ≤ b, na mesma volta) somando as partes de cada segmento dentro da janela.
+    const auto position = [&](std::size_t seg, double t) {  // ponto do segmento seg (nó seg → seg+1) na fração t
+        const Vec2 p = pts[seg];
+        const Vec2 q = pts[(seg + 1) % n];
+        return p + (q - p) * t;
+    };
+    const std::size_t segments = closed ? n : n - 1;
+    const auto integrate = [&](double a, double b) {
+        Vec2 sum{};
+        for (std::size_t g = 0; g < segments; ++g) {
+            const double lo = std::max(a, s[g]);
+            const double hi = std::min(b, s[g + 1]);
+            if (hi <= lo) continue;
+            const double len = s[g + 1] - s[g];
+            const double t0 = (lo - s[g]) / len;
+            const double t1 = (hi - s[g]) / len;
+            sum += (position(g, t0) + position(g, t1)) * (0.5 * (hi - lo));
+        }
+        return sum;
+    };
+    for (std::size_t i = 0; i < n; ++i) {
+        const double center = s[i];
+        double half = h;
+        if (!closed) half = std::min({h, center, total - center});
+        if (!(half > 0.0)) continue;  // extremos de cadeia aberta: ficam onde estão
+        Vec2 sum{};
+        if (closed) {
+            // Janela periódica: [c − h, c + h] vira até 3 pedaços dentro de [0, total].
+            for (const double shift : {-total, 0.0, total}) sum += integrate(center - half + shift, center + half + shift);
+        } else {
+            sum = integrate(center - half, center + half);
+        }
+        out[i] = sum / (2.0 * half);
+    }
+    return out;
+}
 
 PunctureMeasure measureCorner(std::span<const Vec2> pts, std::size_t k, bool closed, double arm) {
     if (k >= pts.size()) throw std::out_of_range("measureCorner: k fora da poligonal");

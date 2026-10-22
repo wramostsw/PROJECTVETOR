@@ -183,6 +183,7 @@ CNX_TEST(puncturing_preserves_the_right_angle_of_a_triangle) {
     const GenerativeModel model(withPuncture.target);
     SmoothParams base = allPhases(MeasurementType::Generative);
     base.airPressureWeight = 0.0;
+    base.punctureOnPhase = 1;  // a fase explícita do meio (o padrão agora é a 1ª: ver puncturing_on_the_staircase_beats_puncturing_after_smoothing)
 
     const VectorImage original = withPuncture.image;
     NodeId corner = cnx::kInvalidId;  // o nó do ângulo reto, na escadinha em (6, 6)
@@ -215,6 +216,82 @@ CNX_TEST(puncturing_preserves_the_right_angle_of_a_triangle) {
     checkInvariants(original, without.image, "triângulo sem perfuração");
 }
 
+CNX_TEST(corner_detection_on_staircases_finds_real_corners_and_skips_arcs) {
+    // Formas de verdade conhecida, rasterizadas e traçadas (a escadinha é o que o detector vê na fase 0).
+    const auto corners = [](const cnxtest::AaScene& s, const SmoothParams& p = SmoothParams{}) {
+        VectorImage image = s.image;
+        const cnx::SmoothTopology topo = cnx::SmoothTopology::build(image, p.airPressureMaxNodes);
+        return cnx::ContourSmoother::puncture(image, topo, p);
+    };
+    const auto disk = [](double r) {
+        return cnxtest::aaScene(44, 44, [r](double x, double y) { return (x - 22.3) * (x - 22.3) + (y - 21.7) * (y - 21.7) <= r * r; }, 4);
+    };
+    // Arcos: nenhum canto, de r = 5 a 12 (os degraus de 1 px de um círculo não são cantos).
+    for (const double r : {5.5, 7.4, 9.3, 12.0}) CHECK_CTX(corners(disk(r)) == 0, "disco r = " + std::to_string(r));
+    // Anel: dois arcos.
+    const cnxtest::AaScene ring = cnxtest::aaScene(44, 44, [](double x, double y) {
+        const double d = std::hypot(x - 22.3, y - 21.7);
+        return d <= 14.0 && d >= 7.5;
+    }, 4);
+    CHECK(corners(ring) == 0);
+    // Retângulos: 4 cantos, de 34 × 3 (mais estreito que o braço de 4 px: só a meia escala o vê) a 12 × 12.
+    const auto rect = [](double x0, double y0, double x1, double y1) {
+        return cnxtest::aaScene(44, 30, [=](double x, double y) { return x >= x0 && x <= x1 && y >= y0 && y <= y1; }, 4);
+    };
+    CHECK(corners(rect(3, 8.2, 37, 10.6)) == 4);  // fio de 34 × 3
+    CHECK(corners(rect(10, 6, 22, 18)) == 4);
+    CHECK(corners(rect(5, 5, 8, 24)) == 4);  // 3 × 19
+    // Sem a meia escala o fio de 3 px não teria nenhum canto: o braço de 4 px passa do canto seguinte.
+    SmoothParams wide;
+    wide.punctureArmPx = 4.0;
+    const cnxtest::AaScene thin = rect(3, 8.2, 37, 10.6);
+    CHECK(corners(thin, wide) == 4);
+    // Triângulo retângulo (hipotenusa em escada): 3 cantos. Losango (escadinha nos 4 lados): 4 pontas.
+    CHECK(corners(cnxtest::aaScene(36, 36, [](double x, double y) { return x >= 6.3 && y >= 6.2 && x + y <= 33.1; }, 4)) == 3);
+    const int diamond = corners(cnxtest::aaScene(44, 44, [](double x, double y) { return std::abs(x - 22.3) + std::abs(y - 21.7) <= 14.0; }, 4));
+    // Cada ponta do losango é cega (2–3 px na escadinha) e sai como 2 nós vizinhos, no máximo.
+    std::printf("  cantos na escadinha: losango %d (pontas verdadeiras: 4)\n", diamond);
+    CHECK(diamond >= 4 && diamond <= 8);
+    // Limiar ≤ 0 desliga tudo; já marcados não contam de novo.
+    SmoothParams off;
+    off.punctureCornerThresh = 0.0;
+    CHECK(corners(thin, off) == 0);
+    VectorImage image = thin.image;
+    const cnx::SmoothTopology topo = cnx::SmoothTopology::build(image, 8);
+    CHECK(cnx::ContourSmoother::puncture(image, topo, SmoothParams{}) == 4 && cnx::ContourSmoother::puncture(image, topo, SmoothParams{}) == 0);
+}
+
+CNX_TEST(puncturing_works_on_any_phase_and_defaults_to_the_first) {
+    // O mesmo triângulo, com a perfuração na 1ª fase (padrão: sobre a escadinha, antes de qualquer suavização) e na
+    // 2ª. Em lados retos as duas chegam ao vértice; a diferença entre elas está nas formas curvas (contour_quality_test).
+    const Vec2 trueCorner{6.3, 6.2};
+    const auto build = [] {
+        return cnxtest::aaScene(36, 36, [](double x, double y) { return x >= 6.3 && y >= 6.2 && x + y <= 33.1; }, 8);
+    };
+    double distance[2] = {0.0, 0.0};
+    int punctured[2] = {0, 0};
+    for (int phase = 0; phase < 2; ++phase) {
+        cnxtest::AaScene s = build();
+        const GenerativeModel model(s.target);
+        SmoothParams p = allPhases(MeasurementType::Generative);
+        p.airPressureWeight = 0.0;
+        p.punctureOnPhase = phase;
+        NodeId corner = cnx::kInvalidId;
+        for (NodeId n = 0; n < static_cast<NodeId>(s.image.nodeCount()); ++n) {
+            if (s.image.position(n) == Vec2{6.0, 6.0}) corner = n;
+        }
+        const cnx::SmoothResult r = ContourSmoother(p, &model).run(s.image);
+        punctured[phase] = r.phases[static_cast<std::size_t>(phase)].puncturedNodes;
+        distance[phase] = sla::norm(s.image.position(corner) - trueCorner);
+        CHECK_CTX((s.image.flags(corner) & cnx::NodeFlag::Corner) != 0, "fase " + std::to_string(phase));
+    }
+    std::printf("  perfuração na fase 0: %d cantos, vértice a %.3f px; na fase 1: %d cantos, a %.3f px\n", punctured[0], distance[0], punctured[1], distance[1]);
+    CHECK(punctured[0] >= 1 && punctured[1] >= 1);
+    CHECK(distance[0] < 0.15 && distance[1] < 0.15);
+    // O padrão é a 1ª fase.
+    CHECK(SmoothParams{}.punctureOnPhase == 0);
+}
+
 CNX_TEST(air_pressure_keeps_small_shapes_from_changing_area) {
     // A região em L tem 6 nós, abaixo do limite de 8: com pressão do ar a área fica quase intacta.
     const auto build = lShapeScene;
@@ -226,6 +303,7 @@ CNX_TEST(air_pressure_keeps_small_shapes_from_changing_area) {
     };
     SmoothParams withAir = allPhases(MeasurementType::Spring);
     withAir.spacingWeight = {0.0, 0.0, 0.0};
+    withAir.punctureCornerThresh = 0.0;  // sem cantos perfurados o prior angular arredonda o L e a área muda (é o que a pressão do ar segura)
     withAir.airPressureWeight = 200.0;
     SmoothParams noAir = withAir;
     noAir.airPressureWeight = 0.0;
@@ -286,6 +364,7 @@ CNX_TEST(crossing_guard_rolls_back_steps_that_would_cross_and_quarantines_the_no
     SmoothParams p = allPhases(MeasurementType::Generative);
     p.maxCgIterations = 150;
     p.maxNodeStepPx = 1.0;
+    p.airPressureWeight = 0.0;  // a pressão do ar segura a área do vão (4 nós < 8) e ele nunca fecharia
     const cnx::SmoothResult r = ContourSmoother(p, &model).run(s.image);
     int rejects = 0;
     for (const cnx::PhaseStats& ph : r.phases) {

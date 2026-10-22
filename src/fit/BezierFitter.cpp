@@ -562,6 +562,27 @@ ChainFit BezierFitter::fitChain(std::span<const Vec2> pts, std::span<const std::
     return out;
 }
 
+namespace {
+
+constexpr double kMaxGapPx = 2.0;           ///< maior distância entre amostras consecutivas da poligonal no ajuste
+constexpr double kStraightTolerancePx = 0.02;  ///< desvio máximo dos controles à corda para a cúbica contar como reta
+
+}  // namespace
+
+/// P1 e P2 a no máximo kStraightTolerancePx da corda P0–P3 e dentro dela, em ordem.
+bool BezierFitter::isStraight(const BezierCurve& c) {
+    const Vec2 d = c.p[3] - c.p[0];
+    const double len = sla::norm(d);
+    if (len < 1e-9) return false;
+    double prev = 0.0;
+    for (const Vec2 q : {c.p[1], c.p[2]}) {
+        const double along = sla::dot(q - c.p[0], d) / len;
+        if (std::abs(sla::cross(q - c.p[0], d)) / len > kStraightTolerancePx || along < prev - kStraightTolerancePx || along > len + kStraightTolerancePx) return false;
+        prev = along;
+    }
+    return true;
+}
+
 FitStats BezierFitter::run(VectorImage& image, TaskContext ctx) const {
     image.clearCurves();
     FitStats total;
@@ -573,12 +594,31 @@ FitStats BezierFitter::run(VectorImage& image, TaskContext ctx) const {
         const auto nodes = image.edgeNodes(e);
         pts.clear();
         corner.clear();
-        for (const NodeId n : nodes) {
-            pts.push_back(image.position(n));
-            corner.push_back((image.flags(n) & kBreak) != 0 ? 1 : 0);
+        for (std::size_t i = 0; i < nodes.size(); ++i) {
+            const Vec2 p = image.position(nodes[i]);
+            pts.push_back(p);
+            corner.push_back((image.flags(nodes[i]) & kBreak) != 0 ? 1 : 0);
+            if (i + 1 == nodes.size()) break;
+            // A energia do ajuste só vê os pontos: depois que o tracer remove os nós colineares, uma borda reta de 18 px
+            // tem 2 nós, e uma cúbica pode se afastar 1 px no meio dela sem custo. Segmentos longos ganham pontos
+            // intermediários (não são nós: o ajuste só os usa como amostras da poligonal).
+            const Vec2 q = image.position(nodes[i + 1]);
+            const double len = sla::norm(q - p);
+            const int pieces = static_cast<int>(std::ceil(len / kMaxGapPx));
+            for (int k = 1; k < pieces; ++k) {
+                pts.push_back(p + (q - p) * (static_cast<double>(k) / pieces));
+                corner.push_back(0);
+            }
         }
         const bool closed = nodes.front() == nodes.back() && nodes.size() >= 4;
-        const ChainFit fit = fitChain(pts, corner, closed);
+        ChainFit fit = fitChain(pts, corner, closed);
+        // Um trecho que ficou reto (controles sobre a corda) é uma reta: sai como "L", não como cúbica degenerada.
+        for (sla::CurveSegment& c : fit.curves) {
+            if (c.kind == sla::SegmentKind::Cubic && BezierFitter::isStraight(c.curve)) {
+                c = {sla::SegmentKind::Line, BezierCurve::fromLine(c.curve.p[0], c.curve.p[3])};
+                ++fit.stats.lines;
+            }
+        }
         image.setEdgeCurves(e, fit.curves);
         total += fit.stats;
     }

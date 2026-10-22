@@ -699,7 +699,120 @@ CNX_TEST(a_smoothed_disk_becomes_a_few_g1_cubics_with_the_right_area) {
     const double tightError = radialError(tightCurves);
     std::printf("  disco com τ_final=0,003: %zu curvas, desvio radial máximo %.4f px\n", tightCurves.size(), tightError);
     CHECK(tightCurves.size() > curves.size());
-    CHECK(tightError < 0.5 * worst);
+    CHECK(tightError < worst);  // mais curvas nunca pioram o ajuste (o disco já sai a ~0,03 px com o limiar padrão)
+    CHECK(tightError < 0.025);
+}
+
+namespace {
+
+/// Distância de q à poligonal (segmentos entre pontos consecutivos).
+double distanceToPolyline(const std::vector<Vec2>& poly, bool closed, Vec2 q) {
+    double best = 1e300;
+    const std::size_t n = poly.size();
+    for (std::size_t i = 0; i + (closed ? 0 : 1) < n; ++i) {
+        const Vec2 a = poly[i];
+        const Vec2 b = poly[(i + 1) % n];
+        const Vec2 d = b - a;
+        const double t = std::clamp(sla::dot(q - a, d) / std::max(1e-300, sla::dot(d, d)), 0.0, 1.0);
+        best = std::min(best, sla::norm(q - (a + d * t)));
+    }
+    return best;
+}
+
+}  // namespace
+
+CNX_TEST(long_straight_stretches_do_not_bulge_between_sparse_nodes) {
+    // "D": uma reta de 18 px (2 nós só, como deixa o tracer depois de tirar os colineares) fechada por uma semicircunferência
+    // de raio 9 em 11 nós. A energia do ajuste só vê os nós: sem amostras na reta, uma cúbica se afasta ~1 px no meio dela.
+    std::vector<Vec2> poly;
+    poly.push_back({10.0, 2.0});  // topo da reta
+    poly.push_back({10.0, 20.0}); // pé da reta
+    for (int k = 1; k <= 11; ++k) {
+        const double a = kPi * k / 12.0;  // do pé, dando a volta pela esquerda até o topo
+        poly.push_back({10.0 - 9.0 * std::sin(a), 11.0 + 9.0 * std::cos(a)});
+    }
+    cnx::VectorImage v(30.0, 30.0);
+    const cnx::FaceId face = v.addFace(sla::Rgba{0.0f, 0.0f, 0.0f, 1.0f}, 0);
+    std::vector<cnx::NodeId> ids;
+    for (std::size_t i = 0; i < poly.size(); ++i) ids.push_back(v.addNode(poly[i], i == 0 ? cnx::NodeFlag::LoopAnchor : 0));
+    ids.push_back(ids.front());
+    (void)v.addEdge(ids, face, cnx::kExteriorFace);
+    v.linkFaceLoops();
+    const std::vector<Vec2> closedPoly = [&] {
+        std::vector<Vec2> p = poly;
+        return p;
+    }();
+    (void)BezierFitter(FitParams{}).run(v);
+    const auto curves = v.edgeCurves(0);
+    double worst = 0.0;
+    for (const sla::CurveSegment& c : curves) {
+        for (int i = 0; i <= 200; ++i) worst = std::max(worst, distanceToPolyline(closedPoly, true, c.curve.eval(i / 200.0)));
+    }
+    int lines = 0;
+    for (const sla::CurveSegment& c : curves) lines += c.kind == sla::SegmentKind::Line ? 1 : 0;
+    std::printf("  D com reta de 18 px: %zu curvas (%d retas), desvio máximo da poligonal %.3f px\n", curves.size(), lines, worst);
+    CHECK(worst < 0.25);  // com o limiar padrão o ajuste fica a ~0,17 px da poligonal (contra 0,87 px sem as amostras)
+    CHECK(lines >= 1);    // o trecho reto sai como "L"
+    // O mesmo ajuste feito diretamente sobre os nós (sem as amostras intermediárias de run()) mostra o defeito.
+    std::vector<std::uint8_t> corner(poly.size() + 1, 0);
+    std::vector<Vec2> sparse = poly;
+    sparse.push_back(poly.front());
+    const cnx::ChainFit direct = BezierFitter(FitParams{}).fitChain(sparse, corner, true);
+    double directWorst = 0.0;
+    for (const sla::CurveSegment& c : direct.curves) {
+        for (int i = 0; i <= 200; ++i) directWorst = std::max(directWorst, distanceToPolyline(closedPoly, true, c.curve.eval(i / 200.0)));
+    }
+    std::printf("  sem as amostras intermediárias: desvio máximo %.3f px\n", directWorst);
+    CHECK(directWorst > 3.0 * worst);
+    // Extremos da cadeia: a primeira curva começa no primeiro nó e a última termina nele (aresta fechada).
+    CHECK(curves.front().start() == poly.front() && curves.back().end() == poly.front());
+}
+
+CNX_TEST(fitted_pieces_that_are_straight_become_lines) {
+    // Retângulo de 30 × 4 com os 4 cantos marcados: cada lado é uma reta, que sai como "L" e não como cúbica.
+    cnx::VectorImage v(40.0, 10.0);
+    const cnx::FaceId face = v.addFace(sla::Rgba{0.0f, 0.0f, 0.0f, 1.0f}, 0);
+    const cnx::NodeId a = v.addNode({5, 3}, cnx::NodeFlag::LoopAnchor | cnx::NodeFlag::Corner);
+    const std::array<cnx::NodeId, 5> loop{a, v.addNode({35, 3}, cnx::NodeFlag::Corner), v.addNode({35, 7}, cnx::NodeFlag::Corner), v.addNode({5, 7}, cnx::NodeFlag::Corner), a};
+    (void)v.addEdge(loop, face, cnx::kExteriorFace);
+    v.linkFaceLoops();
+    const cnx::FitStats stats = BezierFitter(FitParams{}).run(v);
+    const auto curves = v.edgeCurves(0);
+    CHECK(curves.size() == 4);
+    for (const sla::CurveSegment& c : curves) CHECK(c.kind == sla::SegmentKind::Line && c.curve.p == BezierCurve::fromLine(c.curve.p[0], c.curve.p[3]).p);
+    CHECK(stats.lines == 4);
+    CHECK(curves[0].start() == Vec2(5, 3) && curves[0].end() == Vec2(35, 3) && curves[3].end() == Vec2(5, 3));
+    // Um arco de verdade nunca vira reta: um quarto de círculo de raio 10.
+    cnx::VectorImage w(30.0, 30.0);
+    const cnx::FaceId f2 = w.addFace(sla::Rgba{0.0f, 0.0f, 0.0f, 1.0f}, 0);
+    std::vector<cnx::NodeId> ids;
+    for (int k = 0; k <= 12; ++k) ids.push_back(w.addNode({5.0 + 10.0 * std::sin(kPi / 2 * k / 12), 25.0 - 10.0 * std::cos(kPi / 2 * k / 12)}, k == 0 || k == 12 ? cnx::NodeFlag::Corner : 0));
+    ids.push_back(w.addNode({5.0, 25.0}, cnx::NodeFlag::Corner));
+    ids.push_back(ids.front());
+    (void)w.addEdge(ids, f2, cnx::kExteriorFace);
+    w.linkFaceLoops();
+    (void)BezierFitter(FitParams{}).run(w);
+    int cubics = 0;
+    for (const sla::CurveSegment& c : w.edgeCurves(0)) cubics += c.kind == sla::SegmentKind::Cubic ? 1 : 0;
+    CHECK(cubics >= 1);
+}
+
+CNX_TEST(only_cubics_with_controls_on_their_chord_in_order_count_as_straight) {
+    const auto straight = [](Vec2 p1, Vec2 p2) { return BezierFitter::isStraight(BezierCurve({0, 0}, p1, p2, {15, 0})); };
+    CHECK(straight({5, 0}, {10, 0}));            // controles a 1/3 e 2/3 da corda
+    CHECK(straight({0, 0}, {15, 0}));            // controles sobre os extremos
+    CHECK(straight({5, 0.019}, {10, -0.019}));   // dentro da tolerância de 0,02 px
+    CHECK(!straight({5, 0.03}, {10, 0}));        // P1 fora dela
+    CHECK(!straight({5, 0}, {10, -0.03}));       // P2 fora dela
+    CHECK(!straight({5, 0.3}, {10, 0.3}));       // arco raso (sagita ≈ 0,22 px): nunca vira "L"
+    CHECK(!straight({-3, 0}, {10, 0}));          // P1 atrás de P0
+    CHECK(!straight({10, 0}, {5, 0}));           // P1 e P2 fora de ordem
+    CHECK(!straight({5, 0}, {20, 0}));           // P2 depois de P3
+    CHECK(straight({-0.01, 0}, {15.01, 0}));     // dentro da tolerância nas duas pontas
+    CHECK(!BezierFitter::isStraight(BezierCurve({3, 3}, {3, 3}, {3, 3}, {3, 3})));  // corda nula
+    // A mesma regra em outra direção (a corda não precisa estar nos eixos).
+    CHECK(BezierFitter::isStraight(BezierCurve({1, 1}, {4, 5}, {7, 9}, {10, 13})));
+    CHECK(!BezierFitter::isStraight(BezierCurve({1, 1}, {4, 5.2}, {7, 9}, {10, 13})));
 }
 
 CNX_TEST(fitting_is_deterministic_and_cancellable) {

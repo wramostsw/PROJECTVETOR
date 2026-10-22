@@ -128,6 +128,10 @@ public:
     /// τ_r = τ₀·(τ_f/τ₀)^{r/(R−1)}, r = 0..R−1 (R = 1: só τ_f).
     static std::vector<double> thresholdSchedule(const FitParams& params);
 
+    /// Uma cúbica é reta quando P1 e P2 ficam a no máximo 0,02 px da corda P0–P3, dentro dela e em ordem (P0, P1, P2, P3).
+    /// `run` escreve esses trechos como `Line`. Corda de comprimento ~0 não é reta.
+    static bool isStraight(const sla::BezierCurve& c);
+
     /// Ajusta uma poligonal. `corner[i]` marca quebra obrigatória com tangente livre (canto ou junção).
     /// Aberta: os extremos são sempre livres. Fechada (pts.front() == pts.back(), ≥ 4 pontos):
     /// corner[0] diz se o nó âncora é canto; se não for, a tangente é compartilhada por ele.

@@ -1,6 +1,7 @@
 // tests/unit/energy_terms_test.cpp — termos da energia de suavização: valores em forma fechada,
 // gradientes contra diferenças finitas centradas e o detector de cantos perfurados.
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <functional>
 #include <numbers>
@@ -199,8 +200,8 @@ CNX_TEST(angular_energy_of_a_rectangle_is_four_right_angles) {
 CNX_TEST(spacing_energy_of_a_rectangle_and_of_a_uniform_chain) {
     cnxtest::VectorScene s = islandScene();
     const SmoothTopology topo = SmoothTopology::build(s.image, 8);
-    // Lados 4, 5, 4, 5: em cada nó |b| − |a| = ±1 → 4 termos de 1.
-    CHECK(std::abs(cnx::spacingEnergy(s.image, topo, 1.0, {}) - 4.0) < 1e-12);
+    // Lados 4, 5, 4, 5: em cada nó (|b| − |a|)/(|b| + |a|) = ±1/9 → 4 termos de 1/81 (diferença RELATIVA, sem escala).
+    CHECK(std::abs(cnx::spacingEnergy(s.image, topo, 1.0, {}) - 4.0 / 81.0) < 1e-12);
     // Quadrado: todos os lados iguais → energia zero e gradiente zero.
     cnx::PixelMap map(8, 8);
     const cnx::RegionId bg = map.createRegion();
@@ -215,6 +216,112 @@ CNX_TEST(spacing_energy_of_a_rectangle_and_of_a_uniform_chain) {
     std::vector<Vec2> grad(t.image.nodeCount());
     CHECK(cnx::spacingEnergy(t.image, topo2, 1.0, grad) == 0.0);
     for (const Vec2& g : grad) CHECK(std::abs(g.x) < 1e-12 && std::abs(g.y) < 1e-12);
+}
+
+CNX_TEST(spacing_energy_is_scale_free_and_bounded) {
+    // A forma absoluta (|b| − |a|)² custava 961 por canto num fio de 34 × 3 px e achatava o fio num quadrado.
+    // Agora s = (|b| − |a|)/(|b| + |a|) ∈ [−1, 1]: não depende da escala e cada nó custa no máximo o peso.
+    cnxtest::VectorScene s = islandScene();
+    const SmoothTopology topo = SmoothTopology::build(s.image, 8);
+    const double base = cnx::spacingEnergy(s.image, topo, 1.0, {});
+    for (const double k : {0.1, 7.0, 1234.5}) {
+        VectorImage scaled = s.image;
+        for (NodeId n = 0; n < static_cast<NodeId>(scaled.nodeCount()); ++n) scaled.setPosition(n, s.image.position(n) * k);
+        CHECK_CTX(std::abs(cnx::spacingEnergy(scaled, topo, 1.0, {}) - base) < 1e-12, "escala " + std::to_string(k));
+    }
+    // Fio de 34 × 3 montado à mão (uma aresta fechada de 4 cantos): lados 34, 3, 34, 3 → s = ±31/37 nos 4 nós.
+    VectorImage thin(40.0, 10.0);
+    const cnx::FaceId face = thin.addFace(sla::Rgba{0.0f, 0.0f, 0.0f, 1.0f}, 0);
+    const NodeId a = thin.addNode({3, 3}, cnx::NodeFlag::LoopAnchor);
+    const std::array<NodeId, 5> loop{a, thin.addNode({37, 3}), thin.addNode({37, 6}), thin.addNode({3, 6}), a};
+    (void)thin.addEdge(loop, face, cnx::kExteriorFace);
+    thin.linkFaceLoops();
+    const SmoothTopology thinTopo = SmoothTopology::build(thin, 8);
+    CHECK(thinTopo.triples.size() == 4);
+    const double s1 = 31.0 / 37.0;
+    const double thinEnergy = cnx::spacingEnergy(thin, thinTopo, 1.0, {});
+    std::printf("  fio 34 × 3: energia de espaçamento %.4f (a forma absoluta daria %.0f)\n", thinEnergy, 4.0 * 31.0 * 31.0);
+    CHECK(std::abs(thinEnergy - 4.0 * s1 * s1) < 1e-12);
+    CHECK(thinEnergy <= static_cast<double>(thinTopo.triples.size()));  // cada tripla custa no máximo o peso
+    // O mesmo fio com o peso 5 (o da fase 0): 4 · 5 · s² ≈ 14, contra 4 · 5 · 961 = 19 220 antes.
+    CHECK(std::abs(cnx::spacingEnergy(thin, thinTopo, 5.0, {}) - 5.0 * 4.0 * s1 * s1) < 1e-12);
+    // Nós coincidentes (o fiscal só os recusa na entrada do suavizador, mas a energia é chamada com a posição de teste
+    // da busca em linha): la = lb = 0 é 0/0 e não pode contaminar a energia nem o gradiente com NaN.
+    VectorImage collapsed = thin;
+    for (NodeId n = 0; n < static_cast<NodeId>(collapsed.nodeCount()); ++n) collapsed.setPosition(n, {7.0, 7.0});
+    std::vector<Vec2> g(collapsed.nodeCount());
+    const double e0 = cnx::spacingEnergy(collapsed, thinTopo, 1.0, g);
+    CHECK(std::isfinite(e0) && e0 == 0.0);
+    for (const Vec2& v : g) CHECK(std::isfinite(v.x) && std::isfinite(v.y));
+}
+
+CNX_TEST(the_arc_length_box_filter_removes_stairs_but_keeps_corners) {
+    using P = std::vector<Vec2>;
+    // h ≤ 0 ou menos de 3 pontos: cópia.
+    const P two{{0, 0}, {5, 5}};
+    CHECK(cnx::smoothChain(two, false, 1.0) == two);
+    const P any{{0, 0}, {3, 1}, {6, 0}, {9, 4}};
+    CHECK(cnx::smoothChain(any, false, 0.0) == any && cnx::smoothChain(any, true, -1.0) == any);
+    // Valor exato: cadeia aberta (0,0) → (10,0) → (10,10), h = 1. O nó 1 (canto, s = 10) vira a média sobre [9, 11]:
+    // metade em (9,5; 0) e metade em (10; 0,5) → (9,75; 0,25). Os extremos não se mexem.
+    const P ell{{0, 0}, {10, 0}, {10, 10}};
+    const P sm = cnx::smoothChain(ell, false, 1.0);
+    CHECK(sm[0] == ell[0] && sm[2] == ell[2]);
+    CHECK(std::abs(sm[1].x - 9.75) < 1e-12 && std::abs(sm[1].y - 0.25) < 1e-12);
+    // Reta de nós desiguais: a média sobre uma janela simétrica de uma reta é o próprio ponto (o nó volta a si mesmo,
+    // qualquer h e qualquer espaçamento), inclusive perto das pontas, onde a janela encolhe.
+    const P line{{0, 0}, {1, 0}, {4, 0}, {4.5, 0}, {10, 0}, {13, 0}};
+    for (const double h : {0.3, 1.0, 2.5}) {
+        const P out = cnx::smoothChain(line, false, h);
+        for (std::size_t i = 0; i < line.size(); ++i) {
+            CHECK_CTX(std::abs(out[i].y) < 1e-12 && std::abs(out[i].x - line[i].x) < 1e-12, "reta h = " + std::to_string(h) + ", nó " + std::to_string(i));
+        }
+    }
+    // Escadinha de 45°: (0,0) (1,0) (1,1) (2,1) (2,2) …: os pontos crus ficam a até 0,71 da reta y = x; filtrados (h = 1),
+    // os interiores ficam a menos de 0,2.
+    P stair;
+    for (int i = 0; i < 12; ++i) {
+        stair.push_back({static_cast<double>(i), static_cast<double>(i)});
+        stair.push_back({static_cast<double>(i + 1), static_cast<double>(i)});
+    }
+    const P filtered = cnx::smoothChain(stair, false, 1.0);
+    double rawWorst = 0.0;
+    double filteredWorst = 0.0;
+    for (std::size_t i = 4; i + 4 < stair.size(); ++i) {
+        rawWorst = std::max(rawWorst, std::abs(stair[i].x - stair[i].y) / std::sqrt(2.0));
+        filteredWorst = std::max(filteredWorst, std::abs(filtered[i].x - filtered[i].y - 0.5) / std::sqrt(2.0));  // a escadinha oscila em torno de y = x − 0,5
+    }
+    std::printf("  escadinha 45°: desvio da reta %.3f px cru, %.3f px filtrado\n", rawWorst, filteredWorst);
+    CHECK(rawWorst > 0.3 && filteredWorst < 0.2);
+    // Cadeia fechada: periódica. Girar o nó inicial gira o resultado, e o quadrado fica simétrico.
+    const P square{{0, 0}, {10, 0}, {10, 10}, {0, 10}};
+    const P ring = cnx::smoothChain(square, true, 1.0);
+    for (std::size_t k = 0; k < 4; ++k) {
+        CHECK(std::abs(sla::norm(ring[k] - Vec2{5, 5}) - sla::norm(ring[0] - Vec2{5, 5})) < 1e-12);
+        const P rotated{square[(k + 1) % 4], square[(k + 2) % 4], square[(k + 3) % 4], square[k]};
+        const P rr = cnx::smoothChain(rotated, true, 1.0);
+        CHECK(std::abs(rr[3].x - ring[k].x) < 1e-12 && std::abs(rr[3].y - ring[k].y) < 1e-12);
+    }
+    // Cada canto do quadrado vai para dentro: (0,0) → média sobre [−1, 1] do arco = metade em (0, 0,5) e metade em (0,5; 0).
+    CHECK(std::abs(ring[0].x - 0.25) < 1e-12 && std::abs(ring[0].y - 0.25) < 1e-12);
+    // Janela que atravessa o fechamento nos dois sentidos: o último segmento (0,5 px) é menor que a meia janela, então
+    // o nó antes dele enxerga o início da cadeia à frente, e o primeiro enxerga o fim para trás. Qualquer rotação do nó
+    // inicial tem de dar o mesmo contorno.
+    const P shortClose{{0, 0}, {10, 0}, {10, 10}, {0, 10}, {0, 0.5}};
+    const P base = cnx::smoothChain(shortClose, true, 1.0);
+    for (std::size_t r = 1; r < shortClose.size(); ++r) {
+        P rotated;
+        for (std::size_t i = 0; i < shortClose.size(); ++i) rotated.push_back(shortClose[(i + r) % shortClose.size()]);
+        const P rr = cnx::smoothChain(rotated, true, 1.0);
+        for (std::size_t i = 0; i < shortClose.size(); ++i) {
+            const Vec2 want = base[(i + r) % shortClose.size()];
+            CHECK_CTX(std::abs(rr[i].x - want.x) < 1e-12 && std::abs(rr[i].y - want.y) < 1e-12, "rotação " + std::to_string(r) + ", nó " + std::to_string(i));
+        }
+    }
+    // Cadeia de comprimento nulo ou janela maior que a cadeia: não explode.
+    const P degenerate{{1, 1}, {1, 1}, {1, 1}};
+    CHECK(cnx::smoothChain(degenerate, true, 1.0) == degenerate);
+    CHECK(cnx::smoothChain(P{{0, 0}, {0.5, 0}, {1, 0}}, false, 5.0).size() == 3);
 }
 
 CNX_TEST(air_pressure_vanishes_at_the_original_shape_and_follows_the_area_change) {

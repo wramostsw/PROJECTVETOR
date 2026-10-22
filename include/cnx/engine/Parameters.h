@@ -149,7 +149,7 @@ struct SmoothParams {
     double punctureCornerThresh = 0.8;    ///< puncture_corner_thresh (rad)
     double punctureFlatnessThresh = 0.3;  ///< puncture_flatness_thresh (px)
     double punctureArmPx = 4.0;
-    int punctureOnPhase = 1;              ///< índice 0-based: só na fase do meio
+    int punctureOnPhase = 0;              ///< índice 0-based: na 1ª fase, sobre a escadinha (depois dela os cantos já se arredondaram)
     int maxCgIterations = 200;            ///< por fase
     double maxNodeStepPx = 0.5;           ///< região de confiança da busca em linha (§2.3)
     double gradientTolerance = 1.0e-5;    ///< norma do infinito do gradiente nos nós livres

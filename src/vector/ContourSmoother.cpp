@@ -2,6 +2,7 @@
 #include "cnx/vector/ContourSmoother.h"
 
 #include <algorithm>
+#include <array>
 #include <stdexcept>
 #include <utility>
 #include <vector>
@@ -12,6 +13,8 @@ namespace cnx {
 namespace {
 
 using sla::Vec2;
+
+constexpr double kStairFilterPx = 1.0;  ///< meia janela mínima do filtro de arco da detecção de cantos
 
 /// Energia da fase como função das coordenadas dos nós livres, x = [x_0, y_0, x_1, y_1, …].
 /// Cada avaliação escreve as posições no VectorImage (o chamador restaura o ponto aceito).
@@ -73,7 +76,10 @@ ContourSmoother::ContourSmoother(SmoothParams params, const GenerativeModel* mod
 
 int ContourSmoother::puncture(VectorImage& image, const SmoothTopology& topology, const SmoothParams& params) {
     std::vector<NodeId> marked;
-    std::vector<Vec2> pts;
+    // Duas escalas de braço: o braço inteiro e a metade. Um fio de 2,4 px ou a ponta cega de um triângulo têm lados
+    // mais curtos que o braço; o braço passaria do canto seguinte e reprovaria o teste de retidão.
+    const std::array<double, 2> arms{params.punctureArmPx, params.punctureArmPx * 0.5};
+    std::array<std::vector<Vec2>, 2> pts;
     EdgeId currentEdge = kInvalidId;
     bool closed = false;
     for (const SmoothTopology::Triple& t : topology.triples) {
@@ -81,13 +87,19 @@ int ContourSmoother::puncture(VectorImage& image, const SmoothTopology& topology
             currentEdge = t.edge;
             const auto nodes = image.edgeNodes(t.edge);
             closed = nodes.front() == nodes.back();
-            pts.clear();
-            for (std::size_t i = 0; i < nodes.size() - (closed ? 1 : 0); ++i) pts.push_back(image.position(nodes[i]));
+            std::vector<Vec2> raw;
+            for (std::size_t i = 0; i < nodes.size() - (closed ? 1 : 0); ++i) raw.push_back(image.position(nodes[i]));
+            // Sobre a escadinha, os degraus de 1 px de uma borda inclinada reprovariam o teste de retidão (≥ 0,35 px
+            // de desvio) e, na escala pequena, os degraus de um arco pareceriam cantos: mede-se na poligonal filtrada ao
+            // longo do arco, com meia janela max(¼ do braço, 1 px) (o degrau do pixel é a escala mínima).
+            for (std::size_t k = 0; k < arms.size(); ++k) pts[k] = smoothChain(raw, closed, std::max(arms[k] / 4.0, kStairFilterPx));
         }
         if ((image.flags(t.mid) & NodeFlag::Corner) != 0) continue;
-        if (isProbablyPuncturedNode(pts, t.index, closed, params.punctureArmPx, params.punctureCornerThresh,
-                                    params.punctureFlatnessThresh)) {
-            marked.push_back(t.mid);
+        for (std::size_t k = 0; k < arms.size(); ++k) {
+            if (isProbablyPuncturedNode(pts[k], t.index, closed, arms[k], params.punctureCornerThresh, params.punctureFlatnessThresh)) {
+                marked.push_back(t.mid);
+                break;
+            }
         }
     }
     // Decide com as posições da fase anterior e só então marca (a ordem não influencia).

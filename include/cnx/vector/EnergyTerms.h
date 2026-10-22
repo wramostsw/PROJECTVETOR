@@ -110,6 +110,12 @@ struct PunctureMeasure {
     double armFwd = 0.0;
 };
 
+/// Filtro de caixa ao longo do comprimento de arco: cada nó vira a média da posição sobre [s − h, s + h] (integral
+/// exata sobre a poligonal). Tira o ruído de "escadinha" de bordas inclinadas (degraus de 1 px) sem mudar o giro de
+/// um canto, medido sobre braços de vários px. Numa cadeia aberta a janela encolhe de forma simétrica perto das
+/// pontas (os extremos não se movem); numa fechada é periódica. h ≤ 0 devolve a cópia.
+std::vector<sla::Vec2> smoothChain(std::span<const sla::Vec2> pts, bool closed, double h);
+
 /// Mede o nó k da poligonal `pts` (fechada: o último não repete o primeiro). Cada braço segue a
 /// poligonal por até `arm` px de comprimento de arco, parando no fim da cadeia aberta.
 PunctureMeasure measureCorner(std::span<const sla::Vec2> pts, std::size_t k, bool closed, double arm);

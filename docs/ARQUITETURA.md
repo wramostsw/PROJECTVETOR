@@ -113,7 +113,8 @@ cnx-praia/
 │  │                  sub_pixel_segmenter_test, palette_test, weights_finder_test,
 │  │                  parameters_test, preprocess_classify_test, core_engine_test, parameter_filer_test,
 │  │                  edge_classifier_test, flow_field_test, signal_image_test, image_decoder_test,
-│  │                  svg_export_test
+│  │                  svg_export_test, contour_quality_test, svg_support.h (leitor e rasterizador de SVG),
+│  │                  logo_scenes.h (cenas de logo com AA e o gravador de PNG)
 │  ├─ data/           make_fixtures.py, make_gdiplus_fixtures.ps1, manifest*.txt e os arquivos de referência
 │  └─ golden/         imagens + SVG de referência (regressão)
 ├─ bench/             (Google Benchmark: k-means, segmentação, CG, ajuste Bézier)
@@ -443,7 +444,7 @@ E = λ_fid · (mola | E_gen | nada) + λ_ang · E_ang + λ_sp^(φ) · E_sp + λ_
 |---|---|---|
 | Fidelidade | mola Σ max(0, ‖P−O‖ − r)², ou E_gen do `GenerativeModel`, ou nenhuma (`measurement_types[φ]`) | λ_fid = `fidelityWeight` (novo, padrão 1, a calibrar) |
 | Angular | Σ θ², θ = atan2(u×v, u·v), nos nós **interiores** das arestas e nos de arestas fechadas | nas junções a cadeia termina, então não há ângulo; a flag `Corner` desliga o termo no nó |
-| Espaçamento | Σ (‖Δ_k‖ − ‖Δ_{k−1}‖)² | pesos 5,0 → 0,5 → 0,5 |
+| Espaçamento | Σ s², s = (‖Δ_k‖ − ‖Δ_{k−1}‖) / (‖Δ_k‖ + ‖Δ_{k−1}‖) ∈ [−1, 1] | pesos 5,0 → 0,5 → 0,5; **relativo** (a forma absoluta não era invariante à escala, §1.25) |
 | Pressão do ar | (A − A₀)² por contorno com < 8 nós | A₀ = área na escadinha original; contorno = laço de uma face (externo ou furo); o exterior não tem |
 | Âncora de margem | (coordenada − moldura)² nos nós da moldura não fixos | ver a trava exata, abaixo |
 
@@ -459,7 +460,7 @@ Todos os gradientes são analíticos e conferidos contra diferenças finitas cen
 
 **Fluxo de uma fase.** Constrói a topologia estática, perfura os cantos (só na fase `punctureOnPhase`), cria o objetivo sobre os nós livres e itera. Depois de cada iteração aceita pelo CG, o fiscal confere o resultado. Havendo cruzamento ou colapso: desfaz a iteração, põe os nós envolvidos em quarentena por `quarantineRounds` iterações e recomeça o CG do ponto anterior (a energia continua não crescente). Quando a quarentena expira, o conjunto de nós livres muda e o CG recomeça de novo. Ao fim da fase a quarentena é limpa. Entradas que já se cruzam ou já têm segmentos colapsados são recusadas (`std::invalid_argument`).
 
-**Canto perfurado (`isProbablyPuncturedNode`).** O vetor de 21 medidas da especificação não está definido, então implementei uma regra de duas medidas que usa exatamente os dois conceitos citados ("ângulo local e retidão dos trechos adjacentes"). Cada braço segue a poligonal por até `punctureArmPx` (4 px) de comprimento de arco. O nó é canto se |giro entre as cordas dos braços| ≥ `punctureCornerThresh` (0,8 rad) e **nenhum nó intermediário** de cada braço se afasta da corda em mais de `punctureFlatnessThresh` (0,3 px). Limiar ≤ 0 desativa. A regra deve ser recalibrada no conjunto de referência.
+**Canto perfurado (`isProbablyPuncturedNode`).** O vetor de 21 medidas da especificação não está definido, então implementei uma regra de duas medidas que usa exatamente os dois conceitos citados ("ângulo local e retidão dos trechos adjacentes"). Cada braço segue a poligonal por até `punctureArmPx` (4 px) de comprimento de arco. O nó é canto se |giro entre as cordas dos braços| ≥ `punctureCornerThresh` (0,8 rad) e **nenhum nó intermediário** de cada braço se afasta da corda em mais de `punctureFlatnessThresh` (0,3 px). Limiar ≤ 0 desativa. A regra deve ser recalibrada no conjunto de referência. **Atenção:** a regra é aplicada, em `ContourSmoother::puncture`, a uma poligonal filtrada ao longo do arco e em duas escalas de braço, e na fase 0, sobre a escadinha (§1.25); a descrição acima vale para a regra em si.
 
 **Resultados medidos** (MSVC Release):
 - Disco de raio 10,6 com antialiasing (supersampling 16×16), fidelidade generativa: o erro radial médio dos nós cai de 0,425 px na escadinha para 0,015 px, e E_gen de 14,7 para 0,004 (≈ 90 ms).
@@ -470,7 +471,7 @@ Todos os gradientes são analíticos e conferidos contra diferenças finitas cen
 
 **Limitações conhecidas.** Todos os pesos são provisórios (a calibrar): com a mola padrão (λ_fid = 1) um triângulo encolhe vários pixels sob o prior angular de 10, e os testes que dependem disso fixam os pesos explicitamente. O CG pode terminar por `LineSearchFailed` perto do arredondamento (gradiente ≈ 1e-3), o que é reportado em `PhaseStats::status`. O prior de suavidade "raiz quadrada" não foi implementado (`priorType` ≠ 3 lança `std::invalid_argument`).
 
-**Testes** (`energy_terms_test` 10, `optimizer_test` 9, `crossing_guard_test` 7, `contour_smoother_test` 9):
+**Testes** (`energy_terms_test` 12, `optimizer_test` 9, `crossing_guard_test` 7, `contour_smoother_test` 11; a qualidade contra imagem está em `contour_quality_test`, §1.25):
 - Termos em forma fechada, topologia contra contagem independente, gradientes contra diferenças finitas (cada termo e o total, com as três medições).
 - Detector de cantos em poligonais: L, reta, extremo de cadeia, arco, zigue-zague e quadrado fechado.
 - Otimizador: quadrática mal condicionada, Rosenbrock (32 iterações), Wolfe forte e Armijo em cada passo aceito, β ≥ 0, região de confiança por nó, domínio com NaN, falha da busca em linha, determinismo.
@@ -1086,7 +1087,7 @@ A especificação só dá o nome do módulo. Na arquitetura (§0, item 2, e §1.
 - a **suavização** (`ContourSmoother`, perfil LogoMedAA) **deforma as formas**: as letras viram bolhas, a perna esquerda do "n" se inclina e se separa, os cantos do "x" e do retângulo somem, e a borda do retângulo junto ao anel incha;
 - o ajuste de Bézier segue a poligonal suavizada e acrescenta um esporão no pé do "n".
 
-Os testes de suavização, que olham energia, cruzamentos e área, não pegam isso. Os pesos dos priors contra a fidelidade e a perfuração de cantos estão marcados "a calibrar" (§1.13), e este é o próximo problema de qualidade do motor.
+Os testes de suavização, que olham energia, cruzamentos e área, não pegam isso. Os pesos dos priors contra a fidelidade e a perfuração de cantos estão marcados "a calibrar" (§1.13), e este era o próximo problema de qualidade do motor. **Corrigido no §1.25.**
 
 **Teste de mutação** (30 defeitos injetados um por vez, em Release):
 - **Detectados na primeira rodada (26):**
@@ -1112,6 +1113,57 @@ Os testes de suavização, que olham energia, cruzamentos e área, não pegam is
 - *Opções:* traço, opacidade, alfa 0, tamanho em pt, fundo removido nos dois modos, ordem pai-filho, validação.
 - *Arquivo:* atômico, formato não implementado sem tocar o destino, cancelamento, diretório inexistente, nenhum temporário sobrando, substituição.
 - *Motor:* `ExportOutputStage` com as configurações do pedido, o SVG redesenhando a imagem, e a recusa de um snapshot sem ajuste.
+
+### 1.25 Correção da suavização de contornos: letras e cantos de logos com AA
+
+O achado do §1.24 (letras viram bolhas, cantos somem, o fio engorda) foi tratado como defeito de medição antes de defeito de código: os testes de suavização olhavam energia, cruzamentos e área, e nenhum comparava o **resultado** com a imagem.
+
+**Como se mede** (`contour_quality_test`, com `svg_support.h` e `logo_scenes.h`). Três cenas de logo com AA por superamostragem exata são vetorizadas pelo motor, cada estágio é exportado em SVG (`Exporter` + `SvgWriter`), lido de volta e rasterizado (4×4 pontos por pixel). O rasterizado é comparado com o sinal pré-multiplicado, que é o alvo do modelo gerador. Três números por estágio: rmse, maior erro e pixels com erro > 0,2. Nas letras, mede-se também a distância dos 16 vértices verdadeiros ao contorno vetorial. As cenas: *letras* (L, T, I e um bloco, com 16 cantos conhecidos), *formas* (fio preto de 34 × 2,4 px, triângulos, disco amarelo) e *fios* (traços finos, inclusive diagonais).
+
+**Antes e depois** (MSVC Release, rmse contra o alvo):
+
+| Cena | Estágio | Antes | Depois |
+|---|---|---|---|
+| letras | suavizado | 0,0201 | **0,0129** (escadinha: 0,0339) |
+| letras | Bézier | 0,0224 | **0,0180** |
+| formas | suavizado | 0,1064 | **0,0341** (escadinha: 0,0507) |
+| formas | Bézier | 0,1085 | **0,0342** |
+
+Nas letras, o vértice verdadeiro fica a 0,27 px do suavizado e a 0,23 px do Bézier (máx. 0,94); sem a perfuração de cantos seria 0,77 px (máx. 1,00). O fio preto de 34 × 2,4 px sai com caixa de 34,4 × 3,0 px (a escadinha tem 34 × 3), e o disco amarelo tem desvio radial máximo de 0,09 px. Antes, o fio virava um bloco quase quadrado e os cantos das letras ficavam arredondados.
+
+**Quatro causas, cada uma com a correção que a trata**
+
+1. **Espaçamento não invariante à escala.** O termo `(‖b‖ − ‖a‖)²` custava (34 − 3)² = 961 por canto de um fio de 34 × 3 px. O tracer remove os nós colineares, então segmentos de comprimentos muito diferentes são normais, e o suavizador igualava tudo achatando o fio. *Correção:* diferença relativa s = (lb − la)/(la + lb) ∈ [−1, 1], com gradiente analítico (conferido contra diferenças finitas). Num fio de 34 × 3 px com 4 cantos, a energia de espaçamento passa de 4 · 961 = 3844 para 2,81 (s = ±31/37 em cada nó), e o termo mantém o papel que o §1.13 lhe dá (evitar o amontoamento de nós).
+2. **Os cantos eram perfurados tarde demais.** A perfuração só rodava na fase 1, depois de a fase 0 já ter arredondado cada canto, e então o detector via curvas, não ângulos. *Correção:* `punctureOnPhase` passa a 0, e a detecção roda sobre a escadinha original.
+3. **A escadinha reprova o teste de retidão.** Os degraus de uma borda inclinada se afastam da corda em ≥ 0,35 px (limiar: 0,3), e um fio ou a ponta de um triângulo têm lados menores que o braço de 4 px. *Correção:* `smoothChain` (EnergyTerms) calcula a média da posição ao longo do arco numa janela [s − h, s + h] (integral exata por segmento; extremos fixos em cadeia aberta, janela periódica em cadeia fechada), com h = max(braço/4, 1 px). A detecção usa **duas escalas** de braço (o inteiro e a metade) e marca o nó se qualquer uma o aprovar. O piso de 1 px é o degrau do pixel; com 0,5 px, discos pequenos geravam cantos falsos.
+4. **O ajuste de Bézier só vê os nós.** Depois do tracer, uma borda reta de 18 px tem 2 nós, e uma cúbica pode se afastar de 1 px no meio dela sem custo. *Correção:* `BezierFitter::run` insere, em segmentos com mais de 2 px, pontos intermediários que servem só de amostras (não são nós), e uma cúbica cujos controles ficam a ≤ 0,02 px da corda, em ordem, sai como `Line`. Num "D" com reta de 18 px, o desvio máximo da poligonal cai de 0,872 px para 0,168 px.
+
+**Limites e achados fora do escopo (não corrigidos)**
+- **Seleção de K da paleta.** Em cenas com 3 ou 6 tintas, o `PaletteFinder` escolhe K = 2. Os testes forçam `forcedNumColors = inks`. Defeito da paleta, não da suavização.
+- **Franja de cor na sombra.** A regra de sombras do `SubPixelSegmenter` transforma uma linha cinza de AA numa terceira tinta (franja vermelha ou amarela em torno de um traço preto).
+- **Traços diagonais finos (2,8 px).** As pontas não são detectadas como cantos e a cúbica ultrapassa o traço nas pontas. Na cena *fios* o Bézier piora em relação ao suavizado (0,0557 contra 0,0475) e chega a erro máximo de 0,863, e o teste só exige `Bézier < 1,6 × suavizado`.
+- Os limiares de canto (0,8 rad, 0,3 px, braço de 4 px) continuam provisórios e seguem a calibrar num conjunto de referência.
+
+**Teste de mutação** (39 defeitos injetados um por vez, em Release):
+- **Detectados na primeira rodada (33).**
+  - *Espaçamento:* forma absoluta, sem o quadrado, e quatro erros nos termos do gradiente (fator 2 de ∂s, sinal do nó seguinte, termo de `a` no nó do meio, `la` no lugar de `lb`).
+  - *Filtro de arco:* cadeia fechada sem o segmento de fechamento, janela aberta sem encolher nas pontas, só no início, ou com o extremo movido, volta seguinte da janela periódica, divisão por `h` no lugar de `half`, trapézio sem a metade, fração inicial do segmento, comprimento de arco errado.
+  - *Cantos:* uma escala só de braço, filtro sem a janela mínima (e com 0,5 px ou 3 px), sem filtrar a escadinha, janela igual ao braço inteiro, perfuração na fase 1 (no código e no padrão), só a escala grande decidindo.
+  - *Ajuste de Bézier:* amostras a cada 4 px, sem amostras, com `floor`, amostras viradas em quebras, desvio lateral da reta ignorado, reta sempre ou nunca, contador de retas, controles da reta errados.
+- **Seis escaparam; cinco foram fechados:**
+  - *Segmento nulo aceito (S7):* nós coincidentes dão 0/0. O teste novo exige energia e gradiente finitos nesse caso.
+  - *Janela periódica sem a volta anterior (M4):* a volta só importa quando o segmento de fechamento é menor que a meia janela, e o quadrado do teste anterior não tinha isso. Um polígono com segmento de fechamento de 0,5 px agora exige que girar o nó inicial gire o resultado.
+  - *Tolerância de reta de 0,5 px (B6), ordem (B8) e fim (B9):* o `isStraight` estava dentro de um espaço de nomes anônimo e só era exercitado por ajustes reais. Passou a ser `BezierFitter::isStraight` e ganhou um teste direto (limites de 0,02 px, arco raso de 0,3 px, P1 atrás de P0, P1 e P2 fora de ordem, P2 depois de P3, corda nula, corda fora dos eixos).
+  - Reexecutados com `-Only`, os cinco foram detectados.
+- **Um escapa (B4):** espaçar as amostras intermediárias por `k/(pieces+1)` no lugar de `k/pieces`. As amostras continuam sobre o segmento; só o último trecho passa de ≤ 2 px para até 2·len/(pieces+1). Nenhum caso testado muda de forma observável, e não consegui construir um que mude. É uma lacuna de cobertura real e não verificada.
+- **Armadilha do método.** Na primeira reexecução, S7 e M4 sobreviveram porque a cópia dos arquivos preservou datas antigas e o `ninja` não recompilou o teste novo. Ao reexecutar mutantes depois de mudar testes, as datas dos arquivos copiados têm de ser atualizadas (o script, que reaproveita uma cópia compilada, não faz isso sozinho).
+
+**Testes novos ou alterados**
+- `contour_quality_test` (3 casos), com limiares sobre rmse, maior erro, cantos, caixa do fio e raio do disco. Os limiares ficam acima do medido com folga, para o teste detectar regressão e não ruído.
+- `energy_terms_test` (12): o espaçamento tem valor fechado (4/81), é invariante à escala e limitado a 1; o filtro de arco remove a escada de 45° (0,707 px → 0,000 px) e mantém um canto de 90°.
+- `contour_smoother_test` (11): cantos sobre a escadinha (discos e anel 0; retângulos 4; triângulo 3; losango 4 a 8, porque cada ponta cega sai como 2 nós vizinhos), perfuração em qualquer fase e padrão na primeira.
+- `bezier_fitter_test` (26): sem barriga em retas longas com nós esparsos, trechos retos viram `Line`, e `BezierFitter::isStraight` testado diretamente.
+- `energy_terms_test`: além do descrito, nós coincidentes (energia e gradiente finitos) e um polígono fechado com segmento de fechamento curto (a rotação do nó inicial não muda o resultado).
 
 
 ---
@@ -1234,7 +1286,7 @@ E^(φ) = λ_fid·E_fid  (ou E_gen, conforme measurement_types[φ])
 |---|---|---|
 | Fidelidade com zona livre | E_fid = Σ_k max(0, ‖P_k − O_k‖ − r)² (C¹; r = 0 é a mola simples) | 2·max(0, d − r)·(P_k − O_k)/d |
 | Suavidade angular (`prior_types = 3`) | E_ang = Σ_k θ_k², com θ_k = atan2(Δ_{k−1} × Δ_k, Δ_{k−1}·Δ_k) | com u = Δ_{k−1} e v = Δ_k: ∂θ/∂u = (u_y, −u_x)/‖u‖² e ∂θ/∂v = (−v_y, v_x)/‖v‖². Daí ∂θ_k/∂P_{k−1} = −∂θ/∂u, ∂θ_k/∂P_k = ∂θ/∂u − ∂θ/∂v, ∂θ_k/∂P_{k+1} = ∂θ/∂v [V: 3.7·10⁻⁹] |
-| Espaçamento | E_sp = Σ_k (‖Δ_k‖ − ‖Δ_{k−1}‖)² | regra da cadeia sobre ‖Δ‖ |
+| Espaçamento | E_sp = Σ_k s_k², s_k = (‖Δ_k‖ − ‖Δ_{k−1}‖) / (‖Δ_k‖ + ‖Δ_{k−1}‖) | ∂s/∂a = −2b/(a+b)², ∂s/∂b = +2a/(a+b)², com a = ‖Δ_{k−1}‖ e b = ‖Δ_k‖ (§1.25) |
 | Pressão do ar (contornos com < 8 nós) | E_air = (A(P) − A₀)² | 2(A − A₀)·½(y_{k+1} − y_{k−1}, x_{k−1} − x_{k+1}) |
 | Âncora de margem | E_brd = Σ_{k ∈ borda} dist⊥(P_k, moldura)² | normal à moldura |
 | Canto perfurado | remove θ_k de E_ang nos nós com a flag `Corner` (fase 2) | — |
