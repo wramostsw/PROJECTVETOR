@@ -1,8 +1,16 @@
-// cnx/export/Exporter.h — orquestração da exportação e protocolo comum dos 5 escritores (§8).
+// cnx/export/Exporter.h — orquestração da exportação e protocolo comum dos 5 escritores (§8, docs §1.24).
 //
 // O Exporter decide a geometria e a ordem de desenho e emite comandos padronizados para um
 // IShapeWriter (padrão Builder). SVG, EPS, AI e PDF são escritores próprios em texto puro; o DXF
-// usa dxflib (GPLv2/comercial: ver ARQUITETURA.md §0, item 14).
+// usa dxflib (GPLv2/comercial: ver ARQUITETURA.md §0, item 14). Implementado: SVG (SvgWriter.h).
+//
+// Zero frestas: cada fronteira existe uma vez (Edge); a face da esquerda a escreve no sentido direto e a da
+// direita a escreve invertida (P3, P2, P1, P0), com os mesmos números. Modos (`cake_stack_mode`):
+//   Stacked          só o laço externo de cada face, pais antes dos filhos (os filhos pintam por cima);
+//   Compound         laço externo + furos como subcaminhos (orientação oposta: regra nonzero, sem fill-rule);
+//   CompoundByColor  Compound, com as faces da mesma cor num grupo (na ordem da 1ª aparição).
+// Faces ocultas (BackgroundSelection) e totalmente transparentes (alfa 0) não são escritas. Em Compound, uma
+// face oculta vira buraco; em Stacked, aparece o que está embaixo dela (o pai).
 #pragma once
 
 #include <cstddef>
@@ -114,19 +122,25 @@ public:
 
 /// Fábrica: SvgWriter, EpsWriter, AiWriter, CompatiblePdfWriter (PDF 1.4, xref byte a byte, /OPM 1),
 /// DxfWriter. `out` deve estar em modo binário (o PDF depende dos deslocamentos exatos de bytes).
+/// Lança ExportError para os formatos ainda não implementados (hoje: todos menos SVG).
 std::unique_ptr<IShapeWriter> makeWriter(ExportFormat format, std::ostream& out, const ExporterSettings& settings);
 
 class Exporter {
 public:
-    /// Pré-condição: image.hasCurves() (estágio FitBezier concluído). `image` deve viver mais que o Exporter.
+    /// `image` deve viver mais que o Exporter. Arestas com curvas (FitBezier) saem como curvas; arestas sem
+    /// curvas (antes do ajuste) saem como a poligonal dos nós. Lança ExportError se coordinateDecimals ∉ [0, 9],
+    /// strokeWidthPt < 0 ou pointsPerPixel ≤ 0 (ou não finitos).
     Exporter(const VectorImage& image, ExporterSettings settings);
 
+    /// Lança CancelTaskException se `stop` for acionado (verificado a cada face).
     void write(IShapeWriter& writer, const std::stop_token& stop = {}) const;
-    /// Escreve num arquivo temporário e renomeia ao final: nunca deixa um arquivo truncado.
+    /// Escreve num arquivo temporário ao lado do destino e renomeia ao final: nunca deixa um arquivo truncado
+    /// (em erro ou cancelamento o temporário é apagado e o destino fica como estava). Título = nome do arquivo.
+    /// Lança ExportError (E/S, formato não implementado) e CancelTaskException.
     void writeFile(ExportFormat format, const std::filesystem::path& file, const std::stop_token& stop = {}) const;
 
-    /// Ordem de desenho: pai antes dos filhos (exigido no modo Stacked), estável por id.
-    /// Faces ocultas (BackgroundSelection) são omitidas.
+    /// Ordem de desenho: por profundidade na árvore de Face::parent (pai antes dos filhos, exigido no modo
+    /// Stacked), depois por id. Omite o exterior, as faces ocultas (BackgroundSelection) e as de alfa 0.
     std::vector<FaceId> drawOrder() const;
 
 private:
@@ -135,6 +149,7 @@ private:
     /// geometria: encaixe exato, sem fresta nem sobreposição.
     void emitLoop(IShapeWriter& writer, HalfEdgeId first) const;
     void emitFace(IShapeWriter& writer, FaceId f) const;
+    void writeDocument(IShapeWriter& writer, const std::stop_token& stop, std::string title) const;
 
     const VectorImage& image_;
     ExporterSettings settings_;

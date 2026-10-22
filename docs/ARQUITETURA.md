@@ -92,7 +92,7 @@ cnx-praia/
 │     │               Optimizer.h  EnergyTerms.h  CrossingGuard.h   (a grade de segmentos mora em CrossingGuard)
 │     ├─ fit/         BezierFitter.h
 │     ├─ io/          ImageDecode.h  Inflate.h  PngDecoder.h  JpegDecoder.h  ImageFileLoader.h
-│     └─ export/      Exporter.h  [SvgWriter.h  EpsWriter.h  AiWriter.h
+│     └─ export/      Exporter.h  SvgWriter.h  ExportOutputStage.h  [EpsWriter.h  AiWriter.h
 │                      CompatiblePdfWriter.h  DxfWriter.h]
 ├─ src/               (espelha include/; hoje: segment/PixelMap.cpp, QuadTree.cpp, PixelSegmenter.cpp,
 │                      vector/VectorImage.cpp, BoundaryTracer.cpp, GenerativeModel.cpp, EnergyTerms.cpp,
@@ -100,7 +100,8 @@ cnx-praia/
 │                      sla/BezierCurve.cpp; palette/*.cpp; segment/SubPixelSegmenter.cpp;
 │                      engine/CoreEngine.cpp, Parameters.cpp, ParameterFiler.cpp; preprocess/Preprocessor.cpp,
 │                      SignalImage.cpp, EdgeImage.cpp, AADetector.cpp, FlowField.cpp;
-│                      classify/Classifier.cpp; export/ExporterSettings.cpp;
+│                      classify/Classifier.cpp; export/ExporterSettings.cpp, Exporter.cpp, SvgWriter.cpp,
+│                      ExportOutputStage.cpp;
 │                      io/Inflate.cpp, PngDecoder.cpp, JpegDecoder.cpp, ImageDecode.cpp)
 ├─ qt/                EngineController.{h,cpp}  QImageLoader.{h,cpp}
 ├─ tests/
@@ -111,7 +112,8 @@ cnx-praia/
 │  │                  contour_smoother_test, bezier_curve_test, bezier_fitter_test,
 │  │                  sub_pixel_segmenter_test, palette_test, weights_finder_test,
 │  │                  parameters_test, preprocess_classify_test, core_engine_test, parameter_filer_test,
-│  │                  edge_classifier_test, flow_field_test, signal_image_test, image_decoder_test
+│  │                  edge_classifier_test, flow_field_test, signal_image_test, image_decoder_test,
+│  │                  svg_export_test
 │  ├─ data/           make_fixtures.py, make_gdiplus_fixtures.ps1, manifest*.txt e os arquivos de referência
 │  └─ golden/         imagens + SVG de referência (regressão)
 ├─ bench/             (Google Benchmark: k-means, segmentação, CG, ajuste Bézier)
@@ -1046,6 +1048,71 @@ A especificação só dá o nome do módulo. Na arquitetura (§0, item 2, e §1.
   - *empate do Paeth* (`pa ≤ pb` contra `pa < pb`): pa = pb com a ≠ b obriga c = (a + b)/2, logo pc = 0 e c vence; o empate só ocorre com a = b;
   - *refinamento AC de um coeficiente com o bit já ligado:* num fluxo válido esse bit é sempre 0, porque os scans anteriores pararam em Al + 1. A condição só protege contra fluxo corrompido, como no libjpeg;
   - *croma limitado a n − 1:* o maior f possível é menor que n, e i1 já é limitado a n − 1, então o limite superior não muda nada.
+
+### 1.24 `Exporter` e `SvgWriter`
+
+**Exporter** ([Exporter.h](../include/cnx/export/Exporter.h)): é independente de formato e emite o protocolo `IShapeWriter`.
+- **Laços.** Para cada meia-aresta, a direta escreve as curvas da aresta em ordem; a inversa escreve as mesmas curvas em ordem reversa, cada uma invertida (P3, P2, P1, P0). Como a fronteira existe uma vez e o texto sai dos mesmos doubles, as duas faces escrevem os **mesmos números**, mesmo arredondados a 2 casas: zero frestas e zero sobreposição.
+  - Uma aresta sem curvas (antes do ajuste) sai como a poligonal dos nós, só com `L`.
+  - Uma reta ajustada (`SegmentKind::Line`) sai como `L`, e não como uma cúbica degenerada.
+- **Modos** (`cake_stack_mode`):
+  - *bolo em camadas:* só o laço externo de cada face;
+  - *caminhos compostos:* laço externo mais furos, com orientação oposta, que a regra nonzero resolve sem `fill-rule` (invariante I2);
+  - *compostos agrupados por cor:* um grupo por cor exata, na ordem da 1ª aparição.
+- **Ordem de desenho:** profundidade na árvore de `Face::parent`, depois o id. O pai vem antes dos filhos, o que o modo bolo exige.
+- **Fundo removido** (`BackgroundSelection`): a face não é escrita. Nos compostos ela vira buraco; no bolo, aparece o pai. Faces com alfa 0 também não são escritas.
+- **Arquivo atômico:** `writeFile` grava num temporário ao lado do destino e renomeia. Em erro ou cancelamento, o temporário é apagado e o destino fica intacto. O título do SVG é o nome do arquivo.
+- **`ExportOutputStage`:** é o estágio Output do CoreEngine. Grava cada `ExportRequest`, com as configurações do pedido, a partir de `snapshot.fitted`.
+
+**SvgWriter** ([SvgWriter.h](../include/cnx/export/SvgWriter.h)):
+- `<svg width="{W·ppp}pt" height="{H·ppp}pt" viewBox="0 0 W H">`: tamanho em pontos e coordenadas em pixels.
+- Caminhos `M`/`L`/`C`/`Z` com `coordinate_decimals` casas fixas, pelo `std::to_chars`: independente de locale, sem notação científica e nunca "-0".
+- `opacity` com 2 casas, como pede a especificação (1.00 quando opaco); o alfa fica quantizado a ±0,005.
+- Traço anti-fresta da cor do preenchimento, `stroke-width` = 0,09375 pt convertido para unidades do viewBox (pt / ppp), na menor representação exata.
+- **Desvio da especificação:** o id do grupo é `c_rrggbbaa`, não `#rrggbbaa`. Um id XML não pode começar por '#' nem por dígito; com '#' o arquivo falharia num validador.
+
+**Formatos:** EPS, AI, PDF e DXF continuam com `makeWriter` lançando `ExportError` com o motivo. São escritores do mesmo protocolo e entram depois.
+
+**Medido:**
+- **Cenas de blocos aleatórios** (junções e ilhas) e uma **cena com 3 níveis de furos e uma sela**: em 5 pontos por pixel, cada ponto cai em **exatamente um** caminho composto, e da face certa; no modo bolo, a última pintura é a face certa.
+- **Curvas reais** (discos e anéis suavizados e ajustados, 26–28 cúbicas por cena):
+  - 4000 pontos ao acaso, com 2 e com 6 casas decimais: nenhuma fresta e nenhuma sobreposição;
+  - área de cada forma igual à área de Green das cúbicas (`loopArea`) com erro relativo ≤ 7,6·10⁻⁵, que é o da discretização do rasterizador de teste.
+- **Pelo motor:** uma imagem com retângulo, anel e furo dá 4 caminhos, 7 anéis e 10 cúbicas. Os 1420 pixels fora da borda saem com a cor exata. Na borda, o círculo vetorial e a escadinha de pixels diferem em meio pixel por natureza, e 96,35 % de todos os pixels batem.
+- **Verificação visual num navegador real:** a 10x sobre fundo verde, nenhuma fresta.
+
+**Achado da verificação visual (fora do escopo deste módulo).** Vetorizei um logo de 240×160 com AA ("cnx" em branco sobre azul, anel vermelho) e exportei cada estágio:
+- a **segmentação** está certa: as letras saem em escadinha, mas inteiras;
+- a **suavização** (`ContourSmoother`, perfil LogoMedAA) **deforma as formas**: as letras viram bolhas, a perna esquerda do "n" se inclina e se separa, os cantos do "x" e do retângulo somem, e a borda do retângulo junto ao anel incha;
+- o ajuste de Bézier segue a poligonal suavizada e acrescenta um esporão no pé do "n".
+
+Os testes de suavização, que olham energia, cruzamentos e área, não pegam isso. Os pesos dos priors contra a fidelidade e a perfuração de cantos estão marcados "a calibrar" (§1.13), e este é o próximo problema de qualidade do motor.
+
+**Teste de mutação** (30 defeitos injetados um por vez, em Release):
+- **Detectados na primeira rodada (26):**
+  - *Geometria:* curva inversa sem inverter, curvas inversas na ordem direta, compostos sem furos, bolo com furos.
+  - *Seleção:* fundo não removido, alfa 0 escrito, sem agrupar por cor, sem traço.
+  - *Arquivo:* cancelamento ignorado, temporário não apagado, validações (casas > 9, traço negativo, escala não positiva), título.
+  - *SVG:* "-0", cor truncada, traço e tamanho sem a conversão de unidades, "&" sem escapar, grupo sem alfa, opacidade com 3 casas, espaço antes do primeiro `M`, recuo, coordenada não finita.
+  - *Estágio:* snapshot sem ajuste aceito, configurações do pedido ignoradas.
+- **Sobreviventes fechados com testes (4):**
+  - *Poligonal inversa começando no nó errado:* nenhuma cena do tracer tem um laço que comece numa meia-aresta inversa de aresta aberta. Um teste procura cenas assim (acha várias) e confere cobertura e face certa nelas.
+  - *Reta escrita como curva:* a cena dos retângulos ajustada tem de produzir mais de 10 `L`.
+  - *Ordem sem profundidade:* nas cenas do tracer o pai sempre tem o id menor, então a ordenação nunca mudava nada. Um teste com uma imagem montada à mão, em que o filho tem o id menor, exige pai antes do filho, e o modo bolo exige o azul antes do vermelho.
+  - *Cópia no lugar da renomeação:* depois de todas as gravações, o diretório só pode ter o destino.
+
+  Reexecutados (`-Only`), os 4 foram detectados.
+
+**Testes** (`svg_export_test`, 9 casos):
+- *Escritor:* o texto exato de um documento com grupo, traço, opacidade, título escapado, `-0`, casas fixas e cores.
+- *Compostos:* cobertura única e face certa (6 cenas aleatórias e a aninhada), inclusive laços que começam numa meia-aresta inversa.
+- *Ordem:* pai antes do filho com ids invertidos.
+- *Bolo e agrupado:* a face pintada certa, um grupo por cor, ids válidos e únicos.
+- *Curvas:* sem frestas com 2 e 6 casas, e áreas de Green.
+- *Opções:* traço, opacidade, alfa 0, tamanho em pt, fundo removido nos dois modos, ordem pai-filho, validação.
+- *Arquivo:* atômico, formato não implementado sem tocar o destino, cancelamento, diretório inexistente, nenhum temporário sobrando, substituição.
+- *Motor:* `ExportOutputStage` com as configurações do pedido, o SVG redesenhando a imagem, e a recusa de um snapshot sem ajuste.
+
 
 ---
 
