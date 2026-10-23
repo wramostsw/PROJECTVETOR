@@ -1283,6 +1283,64 @@ Mudanças nos testes que já existiam: `flow_field_test` usava cinzas "quase igu
 - *Teto largo.* Com 48 níveis uma faixa pode se enrolar atrás da vizinha por uma ponte fina e aparecer duas vezes na linha do meio da rampa (conexa, mas fora de ordem); nos tetos usados (6 a 24) a ordem é exata.
 - *Um sintoma que não expliquei.* Numa compilação intermediária, `isPhoto(LogoMed)` avaliou verdadeiro dentro de `EngineParameters::applyProfile` (`core_engine_test` falhou porque a impressão digital do estágio de segmentação diferia entre a execução e a consulta de "sujo"), e com impressões de depuração a falha sumia. Reescrevi o trecho com um único `switch` que decide o fator e o encaixe, e o sintoma não voltou em 6 execuções seguidas. Não isolei a causa (suspeito do otimizador do MSVC); fica registrado como risco.
 
+### 1.29 Escada entre faixas parecidas: o contraste da fronteira no suavizador
+
+**O pedido** era ponderar a fidelidade do suavizador pelo contraste entre as duas faces. Implementei isso, e a medição mostrou que **não é a mola que prende a escada**: é o canto perfurado. Os dois mecanismos existem, mas só um vem ligado.
+
+**Como medi.** A fronteira do topo do Acrolimp (laranja-amarelo contra laranja, 24 níveis de contraste) tem o cruzamento de cor `y(x)` achado por coluna, com precisão de subpixel (`bench/profile.cpp`), e o resíduo de uma reta ajustada e o maior degrau entre colunas medem a escada. O próprio JPEG de origem dá 1,07 px e 2,77 px (a escada de blocos 8×8 já está na fonte); a escadinha da segmentação, 1,17 e 4,00. Antes da correção o suavizador entregava **1,17 e 4,07: não tinha mudado nada**.
+
+| variante (perfil de foto equivalente, `--perfil 9`) | resíduo da reta | maior degrau |
+|---|---|---|
+| nenhum dos dois (antes) | 1,17 px | 4,07 px |
+| só a mola pesada por contraste (A) | 1,17 | 4,07 |
+| só o portão do canto (B) | **1,05** | **2,78** |
+| os dois (AB) | 1,10 | 3,06 |
+| mola nas 3 fases: nenhum / A / B / AB | 1,17 / 1,17 / 1,06 / 1,08 | 4,03 / 4,03 / 2,78 / 3,32 |
+
+A não muda nada sozinha e, somada a B, piora um pouco; B leva a fronteira ao nível do JPEG de origem e alisa as bordas diagonais de degradê (visível no zoom). O erro global do Acrolimp fica em 5,95 níveis nas quatro.
+
+**Por que a escada sobrevivia.** `puncture` marca como canto todo nó cujo giro (medido sobre a poligonal filtrada) passa de 0,8 rad com os dois braços retos. Um degrau de JPEG de 8 a 32 px de largura e 2 a 4 px de altura é exatamente isso. O nó vira `Corner`, perde o prior de suavidade e a escada fica. A mola de fidelidade só decide *quanto* o nó pode andar; sem o prior angular não há nada que o faça andar.
+
+**O que foi feito (`EnergyTerms`, `ContourSmoother`):**
+1. `SmoothTopology::nodeContrast`: contraste de cada nó, em níveis de cor, a distância RGBA entre as cores das duas faces da aresta (255 × √dist²); numa junção vale o maior das arestas que passam por ela, e a fronteira com o exterior da imagem tem o máximo (face 0 transparente).
+2. **Portão do canto** (B, **ligado**): `SmoothParams::punctureMinContrast = 24` níveis. Nó em fronteira abaixo disso nunca é canto. Os cantos de um logo (letra contra fundo) têm dezenas de níveis ou mais e ficam como estavam.
+3. **Mola pesada** (A, **desligada**): `contrastFullLevels` (0 = desliga) e `contrastFloor = 0,05`. Escala da mola por nó = clamp((c / cheio)², piso, 1). O quadrado vem de que a informação de posição de uma fronteira cresce com o quadrado do contraste. `springEnergy` ganhou o vetor de escala por nó (energia e gradiente), e só a mola é pesada: a medição generativa já usa os pixels. Fica implementada, testada e configurável porque o pedido a pedia, mas o padrão é desligado: no caso medido ela não ajudou.
+4. Parâmetros novos no .apf: `ContourSmoother::puncture_min_contrast`, `contrast_full_levels`, `contrast_floor`; entram na impressão digital e são validados (piso em (0, 1], os outros ≥ 0).
+
+**Testes (`contrast_smoothing_test`, 9):**
+- Cena de verdade conhecida: duas faixas separadas por uma fronteira de inclinação 0,15 conhecida só em degraus de 16 colunas (2,4 px de altura, como um bloco de JPEG). Com contraste de 16 níveis: a escadinha fica a 1,26 px da reta; **sem o portão, a fronteira se afasta 2,79 px** (8 cantos congelados, pior que a escadinha); **com o portão, 0,33 px**, nenhum canto.
+- Com contraste alto (logo), o portão não muda nenhuma posição de nenhum nó (diferença exatamente 0) e os cantos continuam sendo perfurados.
+- O limiar: 15,5 deixa haver canto numa fronteira de 16, 16,5 não.
+- O contraste de cada nó (16 ± 0,5 entre as faixas, ≥ 255 na moldura e nas junções com ela) e a escala da mola (= clamp((c/60)², piso, 1), (16/60)² = 0,071, o piso manda quando é 0,2, piso inválido lança).
+- `springEnergy` com escala: escala 1 igual à mola de sempre, gradiente por diferenças finitas com escalas aleatórias, escala 0 não custa nada, tamanho errado lança.
+- A mola pesada solta os nós de baixo contraste (deslocamento médio de 0,52 para 1,01 px) e, com contraste ≥ 60, não muda nada.
+- Padrões (portão em 24, mola pesada desligada, nenhum perfil mexe nesses campos) e validação no construtor.
+
+**Mutação:** 21 defeitos injetados (`mutation_contrast.ps1`), 21 detectados, todos no primeiro tiro: o contraste de junção pelo menor valor (H1), fora de escala (H2) ou sem a raiz (H3); a escala linear (H4), sem piso (H5) ou sem teto (H6); o gradiente (H7) ou a energia (H8) da mola sem a escala; tamanho da escala e piso não validados (H9, H10, H16–H18); a avaliação ignorando a escala (H11) e o suavizador ignorando o peso (H12); o portão ausente (H13), com o contraste da aresta vizinha (H14) ou invertido (H15); os campos fora da impressão digital (H19, `parameters_test`); e os padrões trocados (H20, H21). `contrast_smoothing_test` pega 18 deles; H2 e H15 também reprovam `contour_smoother_test` e `contour_quality_test`, o que mostra que os cantos dos logos sintéticos dependem do contraste estar na escala certa. Um mutante que não construí: o limiar exatamente igual ao contraste do nó (`<` contra `<=`), que exigiria um contraste de ponto flutuante igual ao limiar; o teste do limiar cobre 15,5 e 16,5.
+
+**O achado maior da sessão (e não está corrigido): o vetor do Acrolimp é quase todo feito de lascas.** O `cnx_cli` agora conta as faces pequenas:
+
+| ajuste | faces | com menos de 10 px² | com menos de 60 px² |
+|---|---|---|---|
+| teto de fusão 40 níveis | 2171 | 1500 | 2014 |
+| teto 12 níveis (padrão do §1.28) | 9526 | **7470** | 9298 |
+| teto 12 + `min_region_pixels` 30 | 1148 | 0 | 505 |
+| teto 12 + `min_region_pixels` 100 | 395 | 0 | 1 |
+
+A rampa de antialiasing entre o azul de uma letra e o branco tem 2 a 3 px de largura e, com o teto de 12 níveis, vira uma faixa de 1 px por degrau de cor; o ruído de JPEG ao redor das letras faz o resto. Faixas de 1 px coladas não têm como ser suavizadas (o `CrossingGuard` impede os nós de andar), e é isso que dá os dentes de 2 a 3 px nas bordas das letras que a comparação com o Vector Magic expôs (as bordas da referência são lisas, com cantos limpos). Também explica os 30 s de `SmoothContours` e o SVG de 2,2 MB.
+
+Experimentos que descartei, com os números:
+- `min_region_pixels` 30 ou 100: os dentes somem, mas o erro sobe de 5,95 para 9,23 e 11,19 níveis, e as faixas finas de antialiasing (o halo branco) se perdem. É um corte bruto, não uma solução.
+- Medição generativa nas três fases no perfil de foto: erro 5,92, os dentes continuam, 356 s. A fidelidade não é o problema.
+- Perfil de logo com antialiasing (`--perfil 1`): 91 faces, erro 37,8: encaixa tudo nas 4 tintas da paleta (K errado). A combinação "bordas com antialiasing + degradê" **ainda não existe no motor**, e é ela que o modo "Anti-aliased artwork, Unlimited colors" da referência cobre. O próximo módulo é tratar a rampa de antialiasing (as praias do `SubPixelSegmenter`) no caminho de degradê, sem a paleta.
+
+**Limites:**
+- A fronteira do topo volta ao nível do JPEG de origem, não fica mais lisa que ele: as curvas lisas da referência exigiriam um modelo da fronteira (por exemplo um ajuste de curva de baixa ordem sobre a fronteira de contraste baixo), que não existe.
+- O portão do canto vale em todos os perfis, inclusive logos com antialiasing; se um logo tiver um canto real entre duas cores com menos de 24 níveis de diferença, o canto será arredondado (`punctureMinContrast = 0` volta ao comportamento de antes).
+- Sobraram lascas finas ("asas") nas pontas de algumas fronteiras suavizadas; já existiam sem o canto perfurado e não foram tratadas.
+- O número de 24 níveis e o piso 0,05 vêm de uma só imagem (mais o teste sintético); precisam de calibração em mais logos.
+
+**Na CLI:** `--apf arquivo.apf` e `--set Classe::parametro valor` (qualquer parâmetro, na ordem em que aparecem), `--perfil 9` (Custom: o perfil não reescreve nada), `--etapas` (grava também `<saida>.escadinha.svg` e `<saida>.suavizado.svg`) e uma linha com a contagem de faces pequenas.
 
 ---
 

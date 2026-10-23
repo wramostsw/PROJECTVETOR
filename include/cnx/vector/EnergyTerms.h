@@ -45,10 +45,23 @@ struct SmoothTopology {
     std::vector<Triple> triples;
     std::vector<AirLoop> airLoops;
     std::vector<BorderAnchor> borderAnchors;
+    /// Contraste (níveis de cor 0-255, distância RGBA entre as cores das duas faces) da fronteira de cada nó; num nó
+    /// de junção vale o maior das arestas que passam por ele. A fronteira com o exterior da imagem tem contraste
+    /// máximo (a face 0 é transparente).
+    std::vector<double> nodeContrast;
+    /// Escala da mola de fidelidade por nó, em [piso, 1]; vazia = 1 em todos (peso por contraste desligado).
+    std::vector<double> fidelityScale;
+
+    /// Peso da fidelidade pelo contraste (docs §1.29). `fullLevels` ≤ 0 desliga.
+    struct ContrastWeighting {
+        double fullLevels = 0.0;  ///< contraste a partir do qual a mola tem peso total
+        double floor = 1.0;       ///< escala mínima, em (0, 1]
+    };
 
     /// Faces ≥ 1 apenas (o exterior não tem contorno próprio). Os ângulos e o espaçamento não
-    /// existem nas junções: ali a cadeia da aresta termina.
-    static SmoothTopology build(const VectorImage& image, int airMaxNodes);
+    /// existem nas junções: ali a cadeia da aresta termina. Lança std::invalid_argument se o piso
+    /// estiver fora de (0, 1] com o peso por contraste ligado.
+    static SmoothTopology build(const VectorImage& image, int airMaxNodes, const ContrastWeighting& weighting = {});
 };
 
 /// Pesos de uma fase.
@@ -78,8 +91,10 @@ struct EnergyBreakdown {
 
 // ---- termos individuais; `weight` multiplica energia e gradiente ----
 
-/// Σ_n max(0, ‖P_n − O_n‖ − r)². r = 0 é a mola simples; r > 0 é a zona livre (C¹).
-double springEnergy(const VectorImage& image, double weight, double freeRadius, std::span<sla::Vec2> grad);
+/// Σ_n s_n · max(0, ‖P_n − O_n‖ − r)². r = 0 é a mola simples; r > 0 é a zona livre (C¹). `nodeScale` (um s_n por nó;
+/// vazio = 1) é o peso por contraste de SmoothTopology::fidelityScale; tamanho ≠ nodeCount() lança std::invalid_argument.
+double springEnergy(const VectorImage& image, double weight, double freeRadius, std::span<sla::Vec2> grad,
+                    std::span<const double> nodeScale = {});
 
 /// Σ θ², θ = atan2(u × v, u · v), u = P_k − P_{k−1}, v = P_{k+1} − P_k, nos nós de `topology.triples`
 /// sem a flag Corner (canto perfurado). Segmentos de comprimento nulo são ignorados.

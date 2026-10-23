@@ -71,6 +71,9 @@ ContourSmoother::ContourSmoother(SmoothParams params, const GenerativeModel* mod
     if (params_.maxCgIterations < 0) throw std::invalid_argument("ContourSmoother: maxCgIterations < 0");
     if (!(params_.maxNodeStepPx > 0.0)) throw std::invalid_argument("ContourSmoother: maxNodeStepPx <= 0");
     if (params_.quarantineRounds < 0) throw std::invalid_argument("ContourSmoother: quarantineRounds < 0");
+    if (!(params_.punctureMinContrast >= 0.0)) throw std::invalid_argument("ContourSmoother: punctureMinContrast negativo ou NaN");
+    if (!(params_.contrastFullLevels >= 0.0)) throw std::invalid_argument("ContourSmoother: contrastFullLevels negativo ou NaN");
+    if (!(params_.contrastFloor > 0.0 && params_.contrastFloor <= 1.0)) throw std::invalid_argument("ContourSmoother: contrastFloor fora de (0, 1]");
     (void)phaseWeights(params_, 0);  // valida priorType
 }
 
@@ -95,6 +98,8 @@ int ContourSmoother::puncture(VectorImage& image, const SmoothTopology& topology
             for (std::size_t k = 0; k < arms.size(); ++k) pts[k] = smoothChain(raw, closed, std::max(arms[k] / 4.0, kStairFilterPx));
         }
         if ((image.flags(t.mid) & NodeFlag::Corner) != 0) continue;
+        // Entre faixas parecidas não há canto: os degraus do JPEG não são quinas do desenho (docs §1.29).
+        if (topology.nodeContrast[static_cast<std::size_t>(t.mid)] < params.punctureMinContrast) continue;
         for (std::size_t k = 0; k < arms.size(); ++k) {
             if (isProbablyPuncturedNode(pts[k], t.index, closed, arms[k], params.punctureCornerThresh, params.punctureFlatnessThresh)) {
                 marked.push_back(t.mid);
@@ -129,7 +134,8 @@ SmoothResult ContourSmoother::run(VectorImage& image, TaskContext ctx) const {
         if (weights.measurement == MeasurementType::Generative && model_ == nullptr) {
             throw std::invalid_argument("ContourSmoother::run: fase generativa sem GenerativeModel");
         }
-        const SmoothTopology topology = SmoothTopology::build(image, params_.airPressureMaxNodes);
+        const SmoothTopology topology = SmoothTopology::build(image, params_.airPressureMaxNodes,
+                                                              {params_.contrastFullLevels, params_.contrastFloor});
         if (phase == params_.punctureOnPhase) st.puncturedNodes = puncture(image, topology, params_);
 
         PhaseObjective objective(image, topology, model_, weights, params_.borderHardConstraint);

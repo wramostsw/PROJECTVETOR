@@ -158,7 +158,18 @@ struct SmoothParams {
     double punctureCornerThresh = 0.8;    ///< puncture_corner_thresh (rad)
     double punctureFlatnessThresh = 0.3;  ///< puncture_flatness_thresh (px)
     double punctureArmPx = 4.0;
-    int punctureOnPhase = 0;              ///< índice 0-based: na 1ª fase, sobre a escadinha (depois dela os cantos já se arredondaram)
+    /// Contraste (níveis de cor 0-255, distância entre as cores das duas faces da fronteira) abaixo do qual um nó nunca
+    /// é canto perfurado: entre faixas parecidas de um degradê os degraus de 8 px do JPEG parecem cantos vivos e seriam
+    /// preservados (docs §1.29). 0 desliga. Os cantos de um logo (letra contra fundo) têm contraste de dezenas de níveis ou mais.
+    double punctureMinContrast = 24.0;
+    /// Peso da mola de fidelidade pelo contraste da fronteira: escala ∝ contraste² (a informação de posição de uma
+    /// fronteira cresce com o quadrado do contraste), do piso `contrastFloor` até 1 em `contrastFullLevels` níveis de cor.
+    /// 0 desliga, e é o padrão: no logo em degradê medido (docs §1.29) enfraquecer a mola não tirou a escada (quem a
+    /// prende é o canto perfurado, `punctureMinContrast`) e, somado ao portão do canto, deixou a fronteira um pouco pior.
+    /// Só a mola é pesada: a medição generativa já usa os pixels.
+    double contrastFullLevels = 0.0;
+    double contrastFloor = 0.05;
+    int punctureOnPhase = 0;             ///< índice 0-based: na 1ª fase, sobre a escadinha (depois dela os cantos já se arredondaram)
     int maxCgIterations = 200;            ///< por fase
     double maxNodeStepPx = 0.5;           ///< região de confiança da busca em linha (§2.3)
     double gradientTolerance = 1.0e-5;    ///< norma do infinito do gradiente nos nós livres

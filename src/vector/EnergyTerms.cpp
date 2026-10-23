@@ -40,8 +40,26 @@ double shoelace(std::span<const Vec2> pos, const std::vector<NodeId>& nodes) {
 
 // ---------------------------------------------------------------- topologia
 
-SmoothTopology SmoothTopology::build(const VectorImage& image, int airMaxNodes) {
+SmoothTopology SmoothTopology::build(const VectorImage& image, int airMaxNodes, const ContrastWeighting& weighting) {
+    if (weighting.fullLevels > 0.0 && !(weighting.floor > 0.0 && weighting.floor <= 1.0)) {
+        throw std::invalid_argument("SmoothTopology::build: piso do peso por contraste fora de (0, 1]");
+    }
     SmoothTopology t;
+    // Contraste de cada nó: o maior entre as arestas que o contêm (nas junções, a fronteira mais nítida manda).
+    t.nodeContrast.assign(image.nodeCount(), 0.0);
+    for (EdgeId e = 0; e < static_cast<EdgeId>(image.edgeCount()); ++e) {
+        const Edge& edge = image.edge(e);
+        const double levels = 255.0 * std::sqrt(sla::distance2(image.face(edge.left).color, image.face(edge.right).color));
+        for (const NodeId n : image.edgeNodes(e)) t.nodeContrast[ux(n)] = std::max(t.nodeContrast[ux(n)], levels);
+    }
+    if (weighting.fullLevels > 0.0) {
+        t.fidelityScale.resize(image.nodeCount());
+        for (std::size_t n = 0; n < t.fidelityScale.size(); ++n) {
+            // Informação de posição de uma fronteira ∝ contraste²: com a metade do contraste, um quarto do peso.
+            const double r = t.nodeContrast[n] / weighting.fullLevels;
+            t.fidelityScale[n] = std::clamp(r * r, weighting.floor, 1.0);
+        }
+    }
     for (EdgeId e = 0; e < static_cast<EdgeId>(image.edgeCount()); ++e) {
         const auto nodes = image.edgeNodes(e);
         const std::size_t m = nodes.size();
@@ -105,7 +123,11 @@ EnergyWeights phaseWeights(const SmoothParams& p, int phase) {
 
 // ---------------------------------------------------------------- termos
 
-double springEnergy(const VectorImage& image, double weight, double freeRadius, std::span<Vec2> grad) {
+double springEnergy(const VectorImage& image, double weight, double freeRadius, std::span<Vec2> grad,
+                    std::span<const double> nodeScale) {
+    if (!nodeScale.empty() && nodeScale.size() != image.nodeCount()) {
+        throw std::invalid_argument("springEnergy: nodeScale.size() != nodeCount()");
+    }
     double energy = 0.0;
     const auto pos = image.positions();
     const auto origin = image.originalPositions();
@@ -114,8 +136,9 @@ double springEnergy(const VectorImage& image, double weight, double freeRadius, 
         const double len = sla::norm(d);
         const double excess = len - freeRadius;
         if (excess <= 0.0) continue;
-        energy += excess * excess;
-        if (!grad.empty()) grad[n] += d * (weight * 2.0 * excess / len);
+        const double scale = nodeScale.empty() ? 1.0 : nodeScale[n];
+        energy += scale * excess * excess;
+        if (!grad.empty()) grad[n] += d * (weight * scale * 2.0 * excess / len);
     }
     return weight * energy;
 }
@@ -211,7 +234,7 @@ double evaluateEnergy(const VectorImage& image, const SmoothTopology& topology, 
     EnergyBreakdown b;
     switch (w.measurement) {
         case MeasurementType::Spring:
-            b.spring = springEnergy(image, w.fidelity, w.freeRadius, grad);
+            b.spring = springEnergy(image, w.fidelity, w.freeRadius, grad, topology.fidelityScale);
             break;
         case MeasurementType::Generative: {
             if (model == nullptr) throw std::invalid_argument("evaluateEnergy: medição generativa sem GenerativeModel");

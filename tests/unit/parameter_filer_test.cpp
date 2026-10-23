@@ -136,6 +136,9 @@ EngineParameters randomParams(cnxtest::SplitMix64& rng) {
     p.smooth.punctureCornerThresh = cnxtest::symmetric(rng, 3.0);
     p.smooth.punctureFlatnessThresh = wide(rng);
     p.smooth.punctureArmPx = wide(rng) + 1e-3;
+    p.smooth.punctureMinContrast = wide(rng);
+    p.smooth.contrastFullLevels = wide(rng);
+    p.smooth.contrastFloor = 0.01 + 0.99 * cnxtest::uniform01(rng);
     p.smooth.punctureOnPhase = rng.below(3);
     p.smooth.maxCgIterations = rng.below(500);
     p.smooth.maxNodeStepPx = wide(rng) + 1e-6;
@@ -288,6 +291,9 @@ CNX_TEST(every_field_has_exactly_one_line_and_changing_it_changes_only_that_line
         {"ContourSmoother::puncture_corner_thresh", [](auto& p) { p.smooth.punctureCornerThresh = 1.0; }},
         {"ContourSmoother::puncture_flatness_thresh", [](auto& p) { p.smooth.punctureFlatnessThresh = 0.4; }},
         {"ContourSmoother::puncture_arm_px", [](auto& p) { p.smooth.punctureArmPx = 5.0; }},
+        {"ContourSmoother::puncture_min_contrast", [](auto& p) { p.smooth.punctureMinContrast = 11.0; }},
+        {"ContourSmoother::contrast_full_levels", [](auto& p) { p.smooth.contrastFullLevels = 33.0; }},
+        {"ContourSmoother::contrast_floor", [](auto& p) { p.smooth.contrastFloor = 0.5; }},
         {"ContourSmoother::puncture_on_phase", [](auto& p) { p.smooth.punctureOnPhase = 2; }},
         {"ContourSmoother::max_cg_iterations", [](auto& p) { p.smooth.maxCgIterations = 77; }},
         {"ContourSmoother::max_node_step_px", [](auto& p) { p.smooth.maxNodeStepPx = 0.25; }},
