@@ -103,6 +103,17 @@ struct SegmentParams {
     /// possível em RGBA) = sempre encaixa. applyProfile o põe em 1/9 do teto de fusão (um terço em distância: 4 níveis
     /// no perfil médio) nos perfis de foto; os de logo mantêm 4,0.
     double paletteSnapMax = 4.0;
+    /// Rampas de antialiasing sem paleta (PixelSegmenter::absorbRamps, docs §1.30): liga o estágio que funde às
+    /// vizinhas sólidas as regiões finas (sem pixel interior) que são ruído ou mistura de duas cores. Desligado por padrão;
+    /// applyProfile o liga nos perfis de foto/degradê.
+    bool absorbRamps = false;
+    /// Uma fina está "perto" de uma sólida se dist² ≤ rampNearFactor · mergeThreshMax (4: o dobro em distância).
+    double rampNearFactor = 4.0;
+    /// Espessura máxima, em px, da rampa de antialiasing que o absorvedor desfaz: é a profundidade da busca pelas finas
+    /// vizinhas até as sólidas que a explicam (uma rampa de n px só é explicada se a fina de fora enxerga a sólida do outro
+    /// lado, a n camadas). Rampas mais grossas são degradês suaves e ficam como faixas. 4 cobre a borda borrada de um
+    /// JPEG; mais profundidade = bordas mais nítidas, menos faces e mais erro de pixel nas bordas borradas (docs §1.30).
+    int rampMaxDepth = 4;
     int minRegionPixels = 4;           ///< enforceMinNumPixels — a calibrar
     /// Orçamento da simulação "e se" de uma fusão: o erro quadrático da união pode superar a soma
     /// dos erros das partes em no máximo `whatIfFactor · limiar · min(nₐ, n_b)`. Para regiões

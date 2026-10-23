@@ -41,7 +41,7 @@ Fingerprint PaletteParams::fingerprint(Fingerprint upstream) const {
 Fingerprint SegmentParams::fingerprint(Fingerprint upstream) const {
     Fingerprint f;
     f.add(std::string_view("segment")).add(quadTreeBlock).add(quadTreeVariance).add(mergeThreshStart).add(mergeThreshGrowth).add(mergeThreshMax);
-    f.add(paletteSnapMax).add(minRegionPixels).add(whatIfFactor).add(finalSweepCap);
+    f.add(paletteSnapMax).add(static_cast<int>(absorbRamps)).add(rampNearFactor).add(rampMaxDepth).add(minRegionPixels).add(whatIfFactor).add(finalSweepCap);
     f.add(static_cast<int>(linkStrokes)).add(flowSigmaPx).add(strokeMinCoherence).add(strokeMaxAngle);
     f.add(microRegionMaxPixels).add(beachLineTolerance).add(beachMinContrast).add(beachNeighborShare);
     f.add(shadowVariance).add(shadowSmoothRatio).add(shadowMinPixels).add(shadowBlurRadius);
@@ -75,7 +75,10 @@ void EngineParameters::applyProfile(ImageProfile profile) {
     if (isAntialiasedLogo(profile)) {
         smooth.measurementTypes = {MeasurementType::Generative, MeasurementType::Generative, MeasurementType::Generative};
     } else if (isPhoto(profile)) {
-        smooth.measurementTypes = {MeasurementType::Spring, MeasurementType::None, MeasurementType::None};
+        // A especificação (análise estática) sugere a mola só na 1ª fase; medido, as fases sem fidelidade deixam o
+        // contorno derivar assim que as lascas deixam de dar nós de sobra (fita em degradê: erro das áreas planas de
+        // 48 níveis com spring/none/none contra 3,6 com mola nas três; docs §1.30).
+        smooth.measurementTypes = {MeasurementType::Spring, MeasurementType::Spring, MeasurementType::Spring};
     } else {
         smooth.measurementTypes = {MeasurementType::Spring, MeasurementType::Spring, MeasurementType::Spring};
     }
@@ -116,7 +119,10 @@ void EngineParameters::applyProfile(ImageProfile profile) {
     segment.mergeThreshStart = std::min(segment.mergeThreshStart, segment.mergeThreshMax);
     // A tolerância do encaixe é a do ruído, um terço do passo da faixa (4 níveis no perfil médio): mais do que isso
     // puxaria a faixa de um degradê até a tinta, que é só o centro de um grupo do k-means, e pioraria o erro.
-    if (snapOnlyNearInks) segment.paletteSnapMax = segment.mergeThreshMax / 9.0;
+    if (snapOnlyNearInks) {
+        segment.paletteSnapMax = segment.mergeThreshMax / 9.0;
+        segment.absorbRamps = true;  // as rampas de antialiasing não viram faixas de 1 px (§1.30)
+    }
 }
 
 void applyUserControl(EngineParameters& params, UserControl control, int value) {

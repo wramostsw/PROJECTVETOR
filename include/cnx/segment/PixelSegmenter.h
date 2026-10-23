@@ -37,6 +37,7 @@ struct SegmentationStats {
     int diagonalMoves = 0;    ///< pixels movidos para desfazer selas
     int strokeLinks = 0;      ///< pares diagonais de traço fino ligados
     int smallMerges = 0;      ///< fusões por minRegionPixels
+    int rampsAbsorbed = 0;    ///< regiões finas (rampas de antialiasing, ruído) fundidas às sólidas (absorbRamps)
     int finalRegions = 0;
     bool stable = true;       ///< falso se finalSweepCap acabou antes de juntar/trocar/diagonal estabilizarem
 };
@@ -98,6 +99,19 @@ public:
     /// preferida: a que não encosta em outra região além da própria (não cria contatos novos), depois a de cor
     /// mais próxima do traço, depois a horizontal. Retorna o nº de ligações; 0 se linkStrokes = false.
     int linkStrokeSweep();
+    /// Rampas de antialiasing sem paleta (docs §1.30). Com o teto de fusão de degradê (12 níveis) a rampa de 2 a 3 px entre
+    /// duas cores vira uma região de 1 px por degrau de cor, e essas faixas coladas não se suavizam. Uma região é
+    /// *sólida* se tem um pixel interior (os 4 vizinhos na mesma região) e *fina* se não tem. Uma fina é *explicada* se a
+    /// sua cor
+    ///   está perto de uma sólida candidata   dist² ≤ rampNearFactor · mergeThreshMax (ruído, JPEG), ou
+    ///   é mistura de duas candidatas         sobre a reta entre elas (o teste das praias: beachMinContrast,
+    ///                                        beachLineTolerance, t ∈ (0,02; 0,98)).
+    /// As candidatas são as sólidas vizinhas da fina e as vizinhas das finas vizinhas (rampa de até 3 px), as 6 de maior
+    /// contato. A fina preferida vai para a candidata de cor mais próxima (mistura: o lado de t < ½), de fora para dentro:
+    /// só se funde quando é adjacente à preferida (ou ao que a preferida virou), o que divide a rampa pela cor. Sobras sem
+    /// progresso vão para a vizinha não explicada de cor mais próxima. Uma fina que não é explicada (um traço de outra cor)
+    /// fica. Não faz nada se `absorbRamps` for falso. Retorna o nº de regiões finas fundidas.
+    int absorbRamps();
     /// enforceMinNumPixels. Retorna o nº de fusões.
     int mergeSmallRegions();
     /// Número de selas (ver passada diagonal) no mapa atual.

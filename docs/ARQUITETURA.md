@@ -1341,6 +1341,54 @@ Experimentos que descartei, com os números:
 - O número de 24 níveis e o piso 0,05 vêm de uma só imagem (mais o teste sintético); precisam de calibração em mais logos.
 
 **Na CLI:** `--apf arquivo.apf` e `--set Classe::parametro valor` (qualquer parâmetro, na ordem em que aparecem), `--perfil 9` (Custom: o perfil não reescreve nada), `--etapas` (grava também `<saida>.escadinha.svg` e `<saida>.suavizado.svg`) e uma linha com a contagem de faces pequenas.
+### 1.30 Rampas de antialiasing no caminho de degradê, sem paleta
+
+**O problema, com números.** Com o teto de fusão de 12 níveis do §1.28, o Acrolimp (640×640, sem opções) saía com 9526 faces, **7472 delas com menos de 10 px²** e 9298 com menos de 60 px². Classificando as regiões do mapa de segmentação (`bench/slivers.cpp`): só 212 regiões "sólidas" (com um pixel interior, os 4 vizinhos na mesma região) cobriam 332 mil dos 410 mil pixels; as ~7000 *finas* (sem pixel interior) tinham 60 mil pixels, 15% da imagem, e a maioria (6200) tinha 3 ou mais vizinhas dominantes, então não eram "praias" de duas vizinhas. Uma rampa de antialiasing de 2 a 3 px entre o azul de uma letra e o branco virava uma região de 1 px por degrau de cor, e faixas de 1 px coladas não se suavizam (o `CrossingGuard` impede os nós de andar): são os dentes de 2 a 3 px das bordas das letras, os 31 s de `SmoothContours` e o SVG de 2,2 MB.
+
+A praia do `SubPixelSegmenter` não resolve: ela exige contraste mínimo entre as duas vizinhas (36 níveis), e numa rampa de faixas finas as vizinhas diferem por poucos níveis; além disso o resto do `SubPixelSegmenter` encaixa tudo na paleta (perfil 1 no Acrolimp: 91 faces, erro 37,8, K errado).
+
+**O que foi feito: `PixelSegmenter::absorbRamps`** (palette-free, só nos perfis de foto/degradê; `SegmentParams::absorbRamps`, desligado por padrão, ligado por `applyProfile` nas fotos). Roda depois da fusão/troca e antes da ligação de traços:
+1. *Sólida* = região com pixel interior; *fina* = sem.
+2. Uma fina é **explicada** se a sua cor (a) está perto de uma sólida candidata, `dist² ≤ rampNearFactor · mergeThreshMax` (ruído de JPEG; 4 = o dobro em distância, 24 níveis), ou (b) é mistura de duas candidatas, sobre a reta entre elas (o teste das praias: `beachMinContrast`, `beachLineTolerance`, t ∈ (0,02; 0,98)). As candidatas são as sólidas alcançadas por uma busca em largura pelas finas vizinhas, até `rampMaxDepth` camadas (as 6 de maior contato). Uma fina que não é explicada (um traço de outra cor, mais escuro que as duas lados, sem lado) fica.
+3. As explicadas se fundem à preferida (a mais próxima em cor; na mistura, o lado de t < ½), **de fora para dentro**: só se funde quando é adjacente à preferida ou ao que ela virou, o que divide a rampa pela cor. A sobra sem progresso vai para a vizinha *sólida* mais próxima, nunca para uma fina (três colunas finas fundidas virariam uma região de 3 px com pixel interior, ou seja, uma mini-faixa "sólida"; foi um defeito meu, achado numa sonda).
+4. Os pixels absorvidos continuam na região (topologia) mas saem das estatísticas de cor (`excludeFromColorStats`): sem isso a rampa, que num logo estreito é metade dos pixels, puxava a mediana e o branco de uma letra saía cinza-claro.
+5. `rampMaxDepth` é a **espessura máxima, em px, da rampa absorvida** (uma rampa de n px só é explicada se a fina de fora enxerga a sólida do outro lado, a n camadas). Rampas mais grossas são degradês suaves e ficam como faixas. Padrão **4** (a borda borrada de um JPEG).
+
+**Medidas no Acrolimp** (mesma imagem, sem opções; erro em níveis 0–255 contra o JPEG, separado pelo contraste local do original, `bench/errmap.cpp`; tempos medidos com a máquina livre):
+
+| | faces | < 10 px² | `SmoothContours` | erro: plano | suave | médio | borda forte | total |
+|---|---|---|---|---|---|---|---|---|
+| sem o absorvedor | 9526 | 7472 | 31 s | 4,36 | 6,69 | 13,0 | 25,6 | 5,97 |
+| profundidade 3 | 3201 | 2314 | 15 s | 4,36 | 8,39 | 35,4 | 54,2 | 12,39 |
+| **profundidade 4 (padrão)** | **1786** | **1084** | **12,6 s** | 4,35 | 8,86 | 44,1 | 58,2 | 14,51 |
+| profundidade 5 | 1181 | 538 | 11 s | 4,35 | 10,27 | 47,3 | 57,7 | 15,00 |
+
+No logo em degradê (Copilot): 685 para 92 faces, erro 3,9 para 4,3, `SmoothContours` 3,9 para 2,6 s, com as faixas do degradê intactas.
+
+**O erro maior é o preço de uma borda nítida sobre um JPEG borrado, e a métrica de pixel engana.** Nas áreas planas nada piora (4,36 → 4,35) e nas suaves o erro sobe pouco; todo o aumento está nas bordas. A versão anterior "acertava" o número porque reproduzia o borrão de 2 a 3 px com faixas de 1 px, que é exatamente o que não se quer. Para uma borda borrada de 3 px, uma borda nítida perfeitamente posicionada erra cerca de 1/6 do contraste (uns 50 níveis num contraste de 300), que é o 54–58 medido: é o piso do método (a referência também o paga), e não um defeito do absorvedor. O que se ganha está no olho (zoom no mesmo trecho que a comparação com o Vector Magic): bordas lisas, sem dentes, contornos das letras definidos, halos ciano como faixas suaves, o branco do fundo das letras em branco puro.
+
+**Achados no caminho, e uma mudança que não estava no pedido:**
+- *Perfil de foto: mola nas três fases.* A especificação (análise estática) sugeria a mola só na 1ª fase (`spring, none, none`). Medido na fita sintética em degradê, com o absorvedor ligado, as fases sem fidelidade deixam o contorno derivar: erro das áreas planas de **48** níveis, contra **3,6** com mola nas três (e erro total da fita de 30,3 para 2,3, melhor que os 7,2 de antes). As lascas escondiam isso (nós de sobra seguravam a forma). O perfil de foto passou a `spring, spring, spring`; no Acrolimp a mudança é neutra (11,5 nos dois).
+- *Pressão do ar.* O retângulo de 4 nós "formas" piorou (2,2 para 8,4 com a medição generativa) porque a pressão do ar prende a área à da escadinha, que agora não tem as faixas rosa de antialiasing (12 nós) para escondê-la. É o defeito já listado (pressão por número de nós); aqui apareceu na cena sintética do caminho de foto, não no Acrolimp.
+- *Medição generativa* no caminho de foto, com o absorvedor: erro total 11,2 contra 11,5 com a mola, e 108 s. Não compensa agora; o tempo de `SmoothContours` é o gargalo seguinte.
+- Uma sonda (`bench/probe.cpp`) mostrou que a premissa "a profundidade limita a espessura" estava certa só depois de a sobra ir para sólidas: antes, rampas de 5 px eram parcialmente absorvidas por uma cascata de fusões entre finas.
+
+**Testes (`ramp_absorption_test`, 12; a suíte inteira tem 29):**
+- Rampa de 3 px: 5 regiões sem o absorvedor, 2 com ele, cada coluna do lado da cor mais próxima (t = 0,20 com o azul, 0,55 e 0,85 com o branco); a coluna do meio troca de lado com o t (0,30, 0,45, 0,65, 0,80).
+- Profundidade = espessura: 2 px precisa de 2, 3 px de 3, 5 px de 5, 8 px de 7 (duas colunas de cor parecida já se fundem antes); o padrão 4 absorve 3 e deixa 5; um degradê suave de 8 px fica como faixas; `rampMaxDepth = 0` vale como 1.
+- Preservação: um traço escuro de 2 px em fundo branco, um fio verde de 1 px entre o azul e o branco (fora da reta) e um traço mais escuro que o azul (sobre a reta, t > 1) ficam; um degradê largo de 200 colunas não muda um único rótulo.
+- Ruído: um traço de 2×20 px a 17 níveis do branco é absorvido; com `rampNearFactor = 1` fica; a 95 níveis fica. A regra da mistura exige contraste real entre as duas lados (duas cores a 28 níveis com uma coluna no meio, proximidade desligada: fica). Uma faixa de 2 px colada na borda da imagem é fina (o que está fora da imagem não é vizinho).
+- Cor: uma faixa azul de 3 colunas que absorve 6 colunas de rampa continua exatamente azul (distância 0), e o branco também; os pixels absorvidos ficam na região (contagem).
+- Invariantes: 14 cenas aleatórias com blocos, rampas de 1 a 3 px e traços finos: toda região 4-conexa, e o absorvedor nunca cria regiões. Só os perfis de foto ligam o absorvedor (os de logo, não).
+- Ponta a ponta: um degrau vertical em x = 30,4 borrado por uma rampa de 3 px: 5 faces sem o absorvedor, 2 com ele, com a fronteira em 30,00 depois da suavização (a menos de 0,75 px da posição verdadeira).
+
+**Mutação:** 24 defeitos injetados (`mutation_ramps.ps1`), 24 detectados. A primeira rodada deixou escapar quatro e os testes foram reforçados: a solidez que conta o fora da imagem como interior (R2, o teste da faixa colada na borda), a mistura sem limite de t (R6, o traço mais escuro que o azul), a mistura sem contraste mínimo (R9, as duas cores a 28 níveis) e os pixels absorvidos mantidos na mediana (R15, a faixa azul cujos pixels absorvidos são o dobro dos próprios: a primeira versão do teste tinha mais pixels próprios e a mediana os ignorava). Dois padrões de mutante (R19, R20) não casaram por causa de acentos e foram corrigidos. O `sub_pixel_segmenter_test` também pega o absorvedor ligado nos logos (R16, R19). A compilação Debug achou um defeito do próprio teste das cenas aleatórias (um corte podia passar da largura da imagem e escrever fora dela; em Release isso passava em silêncio): corrigido, e R1, R13 e R14 reconfirmados com o gerador novo.
+
+**O que continua aberto:**
+- Ainda sobram 1084 faces com menos de 10 px² no Acrolimp (61% das faces): finas não explicadas, como os halos coloridos e o anel do JPEG, cuja cor não está perto de nenhuma sólida nem sobre a reta de duas. Não são rampas, mas continuam sendo lascas.
+- O `SmoothContours` ainda leva 12,6 s (1786 faces).
+- Na borda nítida, o erro de posição é de pixel inteiro porque o absorvedor trabalha por região. Um refinamento sub-pixel (a medição generativa, hoje cara) é o que a fecharia.
+- Os números `rampNearFactor` = 4 e `rampMaxDepth` = 4 vêm de duas imagens (mais as cenas sintéticas): precisam de calibração em mais logos. O padrão da borda borrada de 3 a 4 px não cobre um JPEG mais fortemente comprimido.
 
 ---
 

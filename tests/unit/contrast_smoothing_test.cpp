@@ -238,8 +238,8 @@ CNX_TEST(corners_are_not_punctured_between_similar_bands_and_the_stairs_go_away)
                 rmsOn, punctOn);
     CHECK(punctOff > 0);   // sem o portão os degraus viram cantos
     CHECK(punctOn == 0);   // com ele, nenhum
-    CHECK(rmsOff > 0.8 * rmsStair);  // sem o portão a escada quase não muda
-    CHECK(rmsOn < 0.6 * rmsOff);     // com o portão a fronteira chega muito mais perto da reta
+    CHECK(rmsOff > 0.5 * rmsStair);  // sem o portão os 8 cantos congelados deixam a escada quase como estava
+    CHECK(rmsOn < 0.3 * rmsOff);     // com o portão a fronteira chega muito mais perto da reta
 }
 
 CNX_TEST(corners_between_high_contrast_faces_are_kept_exactly_as_before) {

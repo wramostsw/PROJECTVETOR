@@ -229,6 +229,9 @@ std::vector<Field> buildFields() {
     f.push_back(doubleField("PixelSegmenter::merge_thresh_growth", [](auto& p) -> auto& { return p.segment.mergeThreshGrowth; }));
     f.push_back(doubleField("PixelSegmenter::merge_thresh_max", [](auto& p) -> auto& { return p.segment.mergeThreshMax; }));
     f.push_back(doubleField("PixelSegmenter::palette_snap_max", [](auto& p) -> auto& { return p.segment.paletteSnapMax; }));
+    f.push_back(boolField("PixelSegmenter::absorb_ramps", [](auto& p) -> auto& { return p.segment.absorbRamps; }));
+    f.push_back(doubleField("PixelSegmenter::ramp_near_factor", [](auto& p) -> auto& { return p.segment.rampNearFactor; }));
+    f.push_back(integerField<int>("PixelSegmenter::ramp_max_depth", [](auto& p) -> auto& { return p.segment.rampMaxDepth; }));
     f.push_back(integerField<int>("PixelSegmenter::min_region_pixels", [](auto& p) -> auto& { return p.segment.minRegionPixels; }));
     f.push_back(doubleField("PixelSegmenter::what_if_factor", [](auto& p) -> auto& { return p.segment.whatIfFactor; }));
     f.push_back(integerField<int>("PixelSegmenter::final_sweep_cap", [](auto& p) -> auto& { return p.segment.finalSweepCap; }));
@@ -334,6 +337,8 @@ const std::vector<Rule>& rules() {
         add({"PixelSegmenter::merge_thresh_max", "PixelSegmenter::merge_thresh_start"}, "PixelSegmenter::merge_thresh_max deve ser finito e >= merge_thresh_start", [](const EngineParameters& p) { return std::isfinite(p.segment.mergeThreshMax) && p.segment.mergeThreshMax >= p.segment.mergeThreshStart; });
         add({"PixelSegmenter::merge_thresh_growth"}, "PixelSegmenter::merge_thresh_growth deve ser finito e > 1", [](const EngineParameters& p) { return above(p.segment.mergeThreshGrowth, 1.0); });
         add({"PixelSegmenter::palette_snap_max"}, "PixelSegmenter::palette_snap_max deve ser finito e >= 0", [](const EngineParameters& p) { return atLeast(p.segment.paletteSnapMax, 0.0); });
+        add({"PixelSegmenter::ramp_max_depth"}, "PixelSegmenter::ramp_max_depth deve ser >= 1", [](const EngineParameters& p) { return p.segment.rampMaxDepth >= 1; });
+        add({"PixelSegmenter::ramp_near_factor"}, "PixelSegmenter::ramp_near_factor deve ser finito e >= 0", [](const EngineParameters& p) { return atLeast(p.segment.rampNearFactor, 0.0); });
         add({"PixelSegmenter::min_region_pixels"},"PixelSegmenter::min_region_pixels deve ser >= 0", [](const EngineParameters& p) { return p.segment.minRegionPixels >= 0; });
         add({"PixelSegmenter::what_if_factor"}, "PixelSegmenter::what_if_factor deve ser finito e >= 0", [](const EngineParameters& p) { return atLeast(p.segment.whatIfFactor, 0.0); });
         add({"PixelSegmenter::final_sweep_cap"}, "PixelSegmenter::final_sweep_cap deve ser >= 0", [](const EngineParameters& p) { return p.segment.finalSweepCap >= 0; });

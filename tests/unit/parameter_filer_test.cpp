@@ -106,6 +106,9 @@ EngineParameters randomParams(cnxtest::SplitMix64& rng) {
     p.segment.mergeThreshMax = p.segment.mergeThreshStart * (1.0 + wide(rng));
     p.segment.mergeThreshGrowth = 1.0 + wide(rng) + 1e-6;
     p.segment.paletteSnapMax = wide(rng);
+    p.segment.absorbRamps = rng.below(2) != 0;
+    p.segment.rampNearFactor = wide(rng);
+    p.segment.rampMaxDepth = 1 + rng.below(6);
     p.segment.minRegionPixels = rng.below(50);
     p.segment.whatIfFactor = wide(rng);
     p.segment.finalSweepCap = rng.below(20);
@@ -262,6 +265,9 @@ CNX_TEST(every_field_has_exactly_one_line_and_changing_it_changes_only_that_line
         {"PixelSegmenter::merge_thresh_growth", [](auto& p) { p.segment.mergeThreshGrowth = 2.0; }},
         {"PixelSegmenter::merge_thresh_max", [](auto& p) { p.segment.mergeThreshMax = 0.1; }},
         {"PixelSegmenter::palette_snap_max", [](auto& p) { p.segment.paletteSnapMax = 0.01; }},
+        {"PixelSegmenter::absorb_ramps", [](auto& p) { p.segment.absorbRamps = !p.segment.absorbRamps; }},
+        {"PixelSegmenter::ramp_near_factor", [](auto& p) { p.segment.rampNearFactor = 9.0; }},
+        {"PixelSegmenter::ramp_max_depth", [](auto& p) { p.segment.rampMaxDepth = 2; }},
         {"PixelSegmenter::min_region_pixels", [](auto& p) { p.segment.minRegionPixels = 9; }},
         {"PixelSegmenter::what_if_factor", [](auto& p) { p.segment.whatIfFactor = 2.0; }},
         {"PixelSegmenter::final_sweep_cap", [](auto& p) { p.segment.finalSweepCap = 3; }},

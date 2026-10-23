@@ -74,6 +74,9 @@ CNX_TEST(every_field_of_every_stage_parameter_set_enters_its_fingerprint) {
         {"mergeThreshGrowth", [](auto& p) { p.mergeThreshGrowth = 2.0; }},
         {"mergeThreshMax", [](auto& p) { p.mergeThreshMax *= 2; }},
         {"paletteSnapMax", [](auto& p) { p.paletteSnapMax = 0.01; }},
+        {"absorbRamps", [](auto& p) { p.absorbRamps = true; }},
+        {"rampNearFactor", [](auto& p) { p.rampNearFactor = 9.0; }},
+        {"rampMaxDepth", [](auto& p) { p.rampMaxDepth = 2; }},
         {"minRegionPixels", [](auto& p) { p.minRegionPixels = 9; }},
         {"whatIfFactor", [](auto& p) { p.whatIfFactor = 2.0; }},
         {"finalSweepCap", [](auto& p) { p.finalSweepCap = 3; }},
@@ -171,7 +174,8 @@ CNX_TEST(built_in_profiles_set_the_measurement_types_and_the_final_fit_threshold
     const std::vector<Row> table{
         {ImageProfile::LogoHighAA, {G, G, G}, 0.2}, {ImageProfile::LogoMedAA, {G, G, G}, 0.7}, {ImageProfile::LogoLowAA, {G, G, G}, 3.0},
         {ImageProfile::LogoHigh, {S, S, S}, 0.2},   {ImageProfile::LogoMed, {S, S, S}, 0.7},   {ImageProfile::LogoLow, {S, S, S}, 3.0},
-        {ImageProfile::PhotoHigh, {S, N, N}, 0.5},  {ImageProfile::PhotoMed, {S, N, N}, 3.0},  {ImageProfile::PhotoLow, {S, N, N}, 10.0},
+        // Foto: mola nas três fases (a especificação sugeria só na 1ª; docs §1.30 mostra a deriva sem fidelidade).
+        {ImageProfile::PhotoHigh, {S, S, S}, 0.5},  {ImageProfile::PhotoMed, {S, S, S}, 3.0},  {ImageProfile::PhotoLow, {S, S, S}, 10.0},
     };
     for (const Row& r : table) {
         cnx::EngineParameters p;

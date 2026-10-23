@@ -519,6 +519,195 @@ int PixelSegmenter::linkStrokeSweep() {
     return links;
 }
 
+// ---------------------------------------------------------------- rampas de antialiasing
+
+int PixelSegmenter::absorbRamps() {
+    if (!initialized_) throw std::logic_error("PixelSegmenter::absorbRamps: mapa não inicializado");
+    if (!params_.absorbRamps) return 0;
+    ensureCache();
+    RegionForest& forest = map_.forest();
+    const int w = map_.width();
+    const int h = map_.height();
+    const int maxDepth = std::max(1, params_.rampMaxDepth);  // camadas de finas entre uma fina e as sólidas que a explicam
+    constexpr int kMaxRounds = 8;  // cada rodada tira as camadas de fora; as de dentro ficam adjacentes às sólidas
+    const double near2 = params_.rampNearFactor * params_.mergeThreshMax;
+    int absorbedTotal = 0;
+
+    for (int round = 0; round < kMaxRounds; ++round) {
+        const std::size_t cap = forest.capacity();
+        // 1. Sólidas: regiões com pelo menos um pixel interior.
+        std::vector<std::uint8_t> solid(cap, 0);
+        for (int y = 0; y < h; ++y) {
+            for (int x = 0; x < w; ++x) {
+                const RegionId r = map_.regionAt(x, y);
+                if (solid[ux(r)]) continue;
+                bool inside = true;
+                for (std::size_t d = 0; d < 4 && inside; ++d) {
+                    const int qx = x + kDx4[d];
+                    const int qy = y + kDy4[d];
+                    inside = qx >= 0 && qy >= 0 && qx < w && qy < h && map_.regionAt(qx, qy) == r;
+                }
+                if (inside) solid[ux(r)] = 1;
+            }
+        }
+
+        // 2. Finas explicadas e a sólida preferida de cada uma. As candidatas vêm de uma busca em largura pelas finas
+        // vizinhas (até kMaxDepth camadas), com o peso do contato dividido por 2^(camada − 1).
+        std::vector<RegionId> preferred(cap, kNoRegion);
+        std::vector<RegionId> thin;
+        std::vector<std::pair<std::uint64_t, RegionId>> cand;
+        std::vector<RegionId> frontier;
+        std::vector<RegionId> next;
+        std::vector<RegionId> visited;
+        const auto addCandidate = [&](RegionId s, std::uint64_t weight) {
+            for (auto& c : cand) {
+                if (c.second == s) {
+                    c.first += weight;
+                    return;
+                }
+            }
+            cand.emplace_back(weight, s);
+        };
+        for (std::size_t i = 0; i < cap; ++i) {
+            const auto r = static_cast<RegionId>(i);
+            if (!forest.isRoot(r) || forest.pixelCount(r) == 0 || solid[i]) continue;
+            cand.clear();
+            frontier.assign(1, r);
+            visited.assign(1, r);
+            for (int depth = 1; depth <= maxDepth && !frontier.empty(); ++depth) {
+                next.clear();
+                for (const RegionId f : frontier) {
+                    const std::vector<RegionId> nbrs(forest.neighbors(f).begin(), forest.neighbors(f).end());
+                    for (const RegionId n : nbrs) {
+                        if (solid[ux(n)]) {
+                            addCandidate(n, (4ull * forest.contactCount(f, n)) >> (depth - 1));
+                        } else if (std::find(visited.begin(), visited.end(), n) == visited.end()) {
+                            visited.push_back(n);
+                            next.push_back(n);
+                        }
+                    }
+                }
+                frontier.swap(next);
+            }
+            if (cand.empty()) continue;
+            std::sort(cand.begin(), cand.end(), [](const auto& a, const auto& b) { return a.first != b.first ? a.first > b.first : a.second < b.second; });
+            if (cand.size() > 6) cand.resize(6);
+            const sla::Rgba c = colorOf(r);
+
+            RegionId best = kNoRegion;
+            double bestD = std::numeric_limits<double>::infinity();
+            for (const auto& [weight, s] : cand) {
+                (void)weight;
+                const double d = sla::distance2(c, colorOf(s));
+                if (d < bestD) {
+                    bestD = d;
+                    best = s;
+                }
+            }
+            if (bestD <= near2) {  // (a) ruído: perto de uma sólida
+                preferred[i] = best;
+                thin.push_back(r);
+                continue;
+            }
+            RegionId blendSide = kNoRegion;  // (b) mistura de duas sólidas
+            double bestOff = std::numeric_limits<double>::infinity();
+            for (std::size_t a = 0; a < cand.size(); ++a) {
+                for (std::size_t b = a + 1; b < cand.size(); ++b) {
+                    const sla::Rgba ca = colorOf(cand[a].second);
+                    const sla::Rgba cb = colorOf(cand[b].second);
+                    const sla::Rgba v = cb - ca;
+                    const double vv = sla::dot(v, v);
+                    if (vv < params_.beachMinContrast) continue;
+                    const double t = sla::dot(c - ca, v) / vv;
+                    if (!(t > 0.02 && t < 0.98)) continue;
+                    const sla::Rgba off = (c - ca) - v * static_cast<float>(t);
+                    const double ratio = std::sqrt(sla::dot(off, off)) / std::sqrt(vv);
+                    if (ratio > params_.beachLineTolerance || ratio >= bestOff) continue;
+                    bestOff = ratio;
+                    blendSide = t < 0.5 ? cand[a].second : cand[b].second;
+                }
+            }
+            if (blendSide != kNoRegion) {
+                preferred[i] = blendSide;
+                thin.push_back(r);
+            }
+        }
+        if (thin.empty()) break;
+
+        // Os pixels das finas explicadas, anotados antes das fusões: depois de absorvidos eles não podem puxar a cor da
+        // sólida (a rampa de um logo estreito é metade dos pixels dele e a mediana viraria um cinza).
+        std::vector<std::uint8_t> inThin(cap, 0);
+        for (const RegionId t : thin) inThin[ux(t)] = 1;
+        struct ThinPixel {
+            int x;
+            int y;
+            RegionId region;
+        };
+        std::vector<ThinPixel> thinPixels;
+        for (int y = 0; y < h; ++y) {
+            for (int x = 0; x < w; ++x) {
+                const RegionId r = map_.regionAt(x, y);
+                if (inThin[ux(r)]) thinPixels.push_back({x, y, r});
+            }
+        }
+
+        // 3. Fusão de fora para dentro: a fina só se une quando é adjacente à preferida (ou ao que ela virou).
+        std::vector<std::uint8_t> pending(cap, 0);
+        for (const RegionId t : thin) pending[ux(t)] = 1;
+        int absorbed = 0;
+        for (int pass = 0; pass < 32; ++pass) {
+            int progress = 0;
+            for (const RegionId t : thin) {
+                if (!pending[ux(t)]) continue;
+                if (!forest.isRoot(t)) {
+                    pending[ux(t)] = 0;
+                    continue;
+                }
+                const RegionId want = forest.find(preferred[ux(t)]);
+                bool adjacent = false;
+                for (const RegionId n : forest.neighbors(t)) adjacent = adjacent || n == want;
+                if (!adjacent) continue;
+                const RegionId merged = forest.unite(t, want);
+                markDirty(merged);
+                pending[ux(t)] = 0;
+                pending[ux(merged)] = 0;
+                ++progress;
+                ++absorbed;
+            }
+            if (progress == 0) break;
+        }
+        // Sobras (a preferida nunca ficou adjacente): vão para a vizinha SÓLIDA de cor mais próxima. Nunca para uma fina:
+        // três colunas finas fundidas virariam uma região de 3 px com pixel interior, isto é, uma mini-faixa "sólida".
+        for (const RegionId t : thin) {
+            if (!pending[ux(t)] || !forest.isRoot(t)) continue;
+            RegionId best = kNoRegion;
+            double bestD = std::numeric_limits<double>::infinity();
+            const sla::Rgba c = colorOf(t);
+            for (const RegionId n : forest.neighbors(t)) {
+                if (pending[ux(n)] || !solid[ux(n)]) continue;
+                const double d = sla::distance2(c, colorOf(n));
+                if (d < bestD) {
+                    bestD = d;
+                    best = n;
+                }
+            }
+            if (best == kNoRegion) continue;
+            markDirty(forest.unite(t, best));
+            pending[ux(t)] = 0;
+            ++absorbed;
+        }
+        // Os pixels absorvidos continuam na região (topologia), mas saem das estatísticas de cor dela.
+        for (const ThinPixel& p : thinPixels) {
+            if (!pending[ux(p.region)]) map_.excludeFromColorStats(p.x, p.y, image_(p.x, p.y));
+        }
+        for (std::size_t i = 0; i < cap; ++i) dirty_[i] = 1;  // as medianas mudaram em toda região que absorveu
+        refreshAll();
+        absorbedTotal += absorbed;
+        if (absorbed == 0) break;
+    }
+    stats_.rampsAbsorbed += absorbedTotal;
+    return absorbedTotal;
+}
 // ---------------------------------------------------------------- enforceMinNumPixels
 
 int PixelSegmenter::mergeSmallRegions() {
@@ -592,6 +781,10 @@ SegmentationResult PixelSegmenter::run(TaskContext ctx, const Palette* palette) 
         stable = j == 0 && s == 0;
     }
     bool settled = stable;
+    // Rampas de antialiasing (só no caminho de degradê/foto): as finas explicadas por vizinhas sólidas saem antes da
+    // ligação de traços, para o que sobrar fino ser mesmo um traço.
+    ctx.throwIfCancelled();
+    absorbRamps();
     // Traços finos, regiões minúsculas e selas se influenciam: alterna até nenhum dos três mudar. A ligação
     // vem antes da fusão das minúsculas, que apagaria os pixels de um traço diagonal um a um.
     ctx.checkpoint(static_cast<double>(schedule.size()) / total);
