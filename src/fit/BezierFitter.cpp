@@ -14,6 +14,7 @@ using sla::BezierCurve;
 using sla::Vec2;
 
 constexpr double kTiny = 1e-12;
+constexpr int kLateSweeps = 4;  ///< varreduras por τ nas duas últimas rodadas (até o ponto fixo)
 
 /// Resolve A x = b (A simétrica k×k, linha a linha) por Cholesky. Falso se A não for definida positiva.
 bool choleskySolve(std::vector<double> a, std::vector<double> b, std::size_t k, std::vector<double>& x) {
@@ -373,9 +374,12 @@ std::vector<double> BezierFitter::thresholdSchedule(const FitParams& p) {
     if (p.maxRounds == 1) return {p.statThreshFinal};
     const double ratio = p.statThreshFinal / p.statThreshInitial;
     for (int r = 0; r < p.maxRounds; ++r) {
-        tau.push_back(p.statThreshInitial * std::pow(ratio, static_cast<double>(r) / static_cast<double>(p.maxRounds - 1)));
+        double v = p.statThreshInitial * std::pow(ratio, static_cast<double>(r) / static_cast<double>(p.maxRounds - 1));
+        // Nunca abaixo da rodada anterior (pow pode errar o último bit) nem acima do teto statThreshFinal.
+        if (!tau.empty()) v = std::max(v, tau.back());
+        tau.push_back(std::min(v, p.statThreshFinal));
     }
-    tau.back() = p.statThreshFinal;  // sem erro de arredondamento no último
+    tau.back() = p.statThreshFinal;  // sem erro de arredondamento no último: o teto é atingido exatamente
     return tau;
 }
 
@@ -541,7 +545,17 @@ ChainFit BezierFitter::fitChain(std::span<const Vec2> pts, std::span<const std::
 
         std::vector<Fragment> frags = cf.initialFragments(span);
         out.stats.initialFragments += static_cast<int>(frags.size());
-        for (const double tau : schedule) (void)cf.sweep(span, frags, tau, out.stats);
+        // Uma varredura só por rodada deixava as rodadas finais (as de τ alto, que formam as splines longas) sem chegar ao
+        // ponto fixo: a fusão que um deslocamento de quebra destrava só era tentada na rodada seguinte, e na última não
+        // havia seguinte. Nas duas últimas rodadas cada τ é repetido até nada mudar (no máximo kLateSweeps vezes; cada
+        // deslocamento aceito reduz E* e cada fusão reduz o nº de fragmentos, então termina). As iniciais seguem com uma.
+        for (std::size_t r = 0; r < schedule.size(); ++r) {
+            const bool late = r + 2 >= schedule.size();
+            const int passes = late ? kLateSweeps : 1;
+            for (int pass = 0; pass < passes; ++pass) {
+                if (!cf.sweep(span, frags, schedule[r], out.stats)) break;
+            }
+        }
         for (int extra = 0; extra < params_.finalSweeps; ++extra) {
             if (!cf.sweep(span, frags, schedule.back(), out.stats)) break;
         }
@@ -564,7 +578,7 @@ ChainFit BezierFitter::fitChain(std::span<const Vec2> pts, std::span<const std::
 
 namespace {
 
-constexpr double kMaxGapPx = 2.0;           ///< maior distância entre amostras consecutivas da poligonal no ajuste
+constexpr double kMaxGapPx = 2.0;          ///< maior distância entre amostras consecutivas da poligonal no ajuste
 constexpr double kStraightTolerancePx = 0.02;  ///< desvio máximo dos controles à corda para a cúbica contar como reta
 
 }  // namespace

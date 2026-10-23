@@ -268,6 +268,10 @@ std::vector<Field> buildFields() {
     f.push_back(doubleField("ContourSmoother::puncture_min_contrast", [](auto& p) -> auto& { return p.smooth.punctureMinContrast; }));
     f.push_back(doubleField("ContourSmoother::contrast_full_levels", [](auto& p) -> auto& { return p.smooth.contrastFullLevels; }));
     f.push_back(doubleField("ContourSmoother::contrast_floor", [](auto& p) -> auto& { return p.smooth.contrastFloor; }));
+    f.push_back(boolField("ContourSmoother::sub_pixel_anchors", [](auto& p) -> auto& { return p.smooth.subPixelAnchors; }));
+    f.push_back(doubleField("ContourSmoother::anchor_reach_px", [](auto& p) -> auto& { return p.smooth.anchorReachPx; }));
+    f.push_back(doubleField("ContourSmoother::anchor_max_shift_px", [](auto& p) -> auto& { return p.smooth.anchorMaxShiftPx; }));
+    f.push_back(doubleField("ContourSmoother::anchor_min_contrast", [](auto& p) -> auto& { return p.smooth.anchorMinContrast; }));
     f.push_back(integerField<int>("ContourSmoother::puncture_on_phase", [](auto& p) -> auto& { return p.smooth.punctureOnPhase; }));
     f.push_back(integerField<int>("ContourSmoother::max_cg_iterations", [](auto& p) -> auto& { return p.smooth.maxCgIterations; }));
     f.push_back(doubleField("ContourSmoother::max_node_step_px", [](auto& p) -> auto& { return p.smooth.maxNodeStepPx; }));
@@ -373,6 +377,9 @@ const std::vector<Rule>& rules() {
         add({"ContourSmoother::puncture_min_contrast"}, "ContourSmoother::puncture_min_contrast deve ser finito e >= 0", [](const EngineParameters& p) { return atLeast(p.smooth.punctureMinContrast, 0.0); });
         add({"ContourSmoother::contrast_full_levels"}, "ContourSmoother::contrast_full_levels deve ser finito e >= 0", [](const EngineParameters& p) { return atLeast(p.smooth.contrastFullLevels, 0.0); });
         add({"ContourSmoother::contrast_floor"}, "ContourSmoother::contrast_floor deve estar em (0, 1]", [](const EngineParameters& p) { return above(p.smooth.contrastFloor, 0.0) && p.smooth.contrastFloor <= 1.0; });
+        add({"ContourSmoother::anchor_reach_px"}, "ContourSmoother::anchor_reach_px deve ser finito e >= 0,5", [](const EngineParameters& p) { return atLeast(p.smooth.anchorReachPx, 0.5); });
+        add({"ContourSmoother::anchor_max_shift_px"}, "ContourSmoother::anchor_max_shift_px deve ser finito e >= 0", [](const EngineParameters& p) { return atLeast(p.smooth.anchorMaxShiftPx, 0.0); });
+        add({"ContourSmoother::anchor_min_contrast"}, "ContourSmoother::anchor_min_contrast deve ser finito e >= 0", [](const EngineParameters& p) { return atLeast(p.smooth.anchorMinContrast, 0.0); });
         add({"ContourSmoother::puncture_on_phase"}, "ContourSmoother::puncture_on_phase deve estar em [0, 2]", [](const EngineParameters& p) { return p.smooth.punctureOnPhase >= 0 && p.smooth.punctureOnPhase < SmoothParams::kPhases; });
         add({"ContourSmoother::max_cg_iterations"}, "ContourSmoother::max_cg_iterations deve ser >= 0", [](const EngineParameters& p) { return p.smooth.maxCgIterations >= 0; });
         add({"ContourSmoother::max_node_step_px"}, "ContourSmoother::max_node_step_px deve ser finito e > 0", [](const EngineParameters& p) { return above(p.smooth.maxNodeStepPx, 0.0); });

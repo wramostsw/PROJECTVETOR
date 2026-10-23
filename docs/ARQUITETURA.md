@@ -1390,6 +1390,60 @@ No logo em degradê (Copilot): 685 para 92 faces, erro 3,9 para 4,3, `SmoothCont
 - Na borda nítida, o erro de posição é de pixel inteiro porque o absorvedor trabalha por região. Um refinamento sub-pixel (a medição generativa, hoje cara) é o que a fecharia.
 - Os números `rampNearFactor` = 4 e `rampMaxDepth` = 4 vêm de duas imagens (mais as cenas sintéticas): precisam de calibração em mais logos. O padrão da borda borrada de 3 a 4 px não cobre um JPEG mais fortemente comprimido.
 
+### 1.31 Posição sub-pixel das bordas, e três ajustes de franja, suavização e Bézier
+
+**O problema.** A segmentação decide a que região cada *pixel* pertence, então a fronteira sai sobre a grade (a escadinha do `BoundaryTracer`) e o erro de posição é de até meio pixel. Num cruzamento de duas retas (um canto) ele é de até meio pixel por eixo. A referência (recorte do Vector Magic enviado) põe o traçado no meio da rampa de antialiasing, com o vértice dos cantos entre dois pixels.
+
+**O que foi feito: `refineEdgeAnchors`** (`EdgeAnchors.h/.cpp`; `SmoothParams::subPixelAnchors`, ligado por `applyProfile` nos perfis de foto/degradê; os de logo com AA já medem a imagem pelo modelo gerador). Não é modelo generativo nem otimização: uma conta por nó.
+1. Para cada nó de aresta entre duas faces visíveis, a tangente vem da cadeia filtrada por arco (meia janela de 2 px, a escadinha é o ruído) e a normal é perpendicular a ela.
+2. Amostra-se a imagem de 8 bits sem desfoque ao longo da normal, de −R a +R (R = `anchorReachPx` = 2,5 px, passo de ½ px, bilinear), e projeta-se cada amostra sobre a reta entre as cores das duas faces: t(s) é a fração da cor B.
+3. A posição da borda é s₀ = R − ∫ t ds. Para um degrau com t = 0 antes de s₀ e 1 depois, ∫ t = R − s₀ exato; um desfoque simétrico (borda de JPEG) não muda a integral, e é a mesma conta da cobertura de área de um pixel de antialiasing.
+4. Só se aceita a transição limpa: as pontas do perfil a menos de 0,2 e a mais de 0,8 de B, e **nenhuma** amostra a mais de 40% do contraste da reta A–B (uma terceira cor, mesmo de 1 px, invalida). Se o perfil de ±2,5 px não for limpo (traço fino, borda vizinha), o alcance cai de ½ em ½ px até 1,5.
+5. Um **canto** (giro > `punctureCornerThresh` em ±3 nós) não tem normal: ele vai para a interseção das retas dos seus dois braços (de 2 a 6 px de arco, retos dentro de 0,75 px), cada uma com a sua posição sub-pixel. Um lado reto entre dois cantos não tem nó nenhum (o tracer tira os colineares), então mover os cantos é o que move o lado.
+6. Só as **âncoras da mola de fidelidade** (`originalPosition`) mudam: o suavizador continua partindo da escadinha e a mola passa a puxar para a borda medida. Ficam de fora: junções, moldura, contraste abaixo de `anchorMinContrast`, curvas fechadas demais, canto sem dois braços medidos, e o que passar de `anchorMaxShiftPx` (1 px; cantos 1,5×).
+
+**Medidas, cenas sintéticas** (antialiasing exato por superamostragem 8×8, verdade conhecida):
+
+| cena | nós na escadinha | âncoras | depois do suavizador, sem âncoras → com |
+|---|---|---|---|
+| reta inclinada 0,31 | 0,485 px | 0,010 px | 0,058 → **0,006** px |
+| círculo r = 14 | 0,437 px | 0,032 px | |
+| retângulo de cantos fracionários (pior canto) | 0,283 px | 0,072 px | 0,282 → **0,073** px |
+| motor inteiro, reta inclinada (perfil Custom) | | | 0,058 → **0,006** px |
+
+**Medidas, imagens reais** (erro em níveis 0–255 por classe de contraste local, `bench/errmap.cpp`; antes = motor do commit anterior; `anchorMinContrast` = 48):
+
+| | suave | médio | borda forte | nós movidos / candidatos |
+|---|---|---|---|---|
+| Copilot, antes | 7,95 | 17,03 | 34,61 | |
+| Copilot, depois | **7,27** | **16,59** | **33,43** | 1471 / 1571 (94%) |
+| Acrolimp, antes | 8,86 | 44,13 | 58,22 | |
+| Acrolimp, depois | 8,87 | 44,03 | 57,70 | 4147 / 7862 (53%) |
+
+**O ganho em pixels nas imagens reais é pequeno (1 a 3% na borda forte), e é preciso dizer por quê.** (a) Sobre uma borda inclinada o suavizador já faz a média da escadinha, que é a posição verdadeira com erro ~0,06 px (a linha da direita da tabela sintética): o que as âncoras tiram é o resto, e o piso de uma borda nítida sobre um JPEG borrado de 3 px é ~⅙ do contraste, que domina o número. (b) O ganho visível está nos **cantos e nos lados horizontais/verticais**, que a escadinha erra de uma vez em até ½ px e que a média não corrige. (c) No recorte do Acrolimp, com e sem âncoras, a diferença no olho é desprezível; os defeitos visíveis ali são outros (abaixo).
+
+**Calibração do contraste mínimo.** Com `anchorMinContrast` = 24 (o do canto perfurado) a classe suave do Copilot **piorou** 8% (7,95 → 8,61): fronteiras entre faixas de degradê, com contraste de poucas dezenas de níveis, têm posição incerta e a medição as arrasta. Com 48 e 80 ela melhora 9% (7,27); com 120 volta a piorar (8,60), porque tira as bordas de letras de contraste médio. O padrão é **48**. No Acrolimp o valor quase não importa (borda forte 57,5 a 57,7).
+
+**O que o recorte do Acrolimp mostra e as âncoras não resolvem** (zoom 6× do canto do "A" e de uma haste do "r"; `smoke/cropA.png`, `cropB.png`):
+- Um *degrau de 1 px* numa borda reta, na haste, coincide com a linha 320 da imagem: é a fronteira de bloco 8×8 do JPEG. A medição segue o degrau porque ele está nos pixels.
+- O canto arredondado do contorno do "A" sai quase vivo, com um dente no alto à direita.
+- Uma lasca azul-escura estreita dentro da haste (uma face fina que o absorvedor não explicou).
+
+**Ajustes pedidos junto, validados agora pela suíte** (a primeira rodada, feita sem compilar, deixou um teste vermelho):
+- *`SubPixelSegmenter`, franja de cor.* (i) Os pixels de transição que uma praia entrega a uma dominante saem das amostras de cor dela, e os pixels de uma micro-região absorvida saem das da vizinha (a mesma regra do absorvedor, §1.30): sem isso a mediana de uma região pequena escorrega para o meio do degradê. (ii) A praia reconhece rampas de até 3 px (nenhum pixel de profundidade 3 e os de profundidade 2 em ≤ ⅓). **A suíte pegou um defeito meu aqui:** o teste existente "banda larga" (3 colunas de um cinza só entre o branco e o preto, que é uma tira do desenho) passou a ser tratado como praia. Agora uma faixa de 3 px só é rampa se os tons variam de um lado ao outro (t com amplitude ≥ 0,3); uma faixa de tom constante continua uma região. (iii) O pixel que não alcança o próprio lado tenta o outro, pixel a pixel, antes de o resto ser fundido inteiro, e o resto só se funde a uma dominante que ele toca.
+- *`ContourSmoother`.* Não achei defeito no código que lê os pesos (eles vêm de `phaseWeights`, `EnergyTerms` e `Optimizer`). Adicionei uma confirmação: uma convergência declarada é confirmada por um recomeço do CG (direção zerada) no mesmo ponto; só termina se o recomeço também convergir. O ponto aceito não piora. **Nas duas imagens reais isto é neutro** (`SmoothContours` 12,3 contra 12,8 s e 2,4 contra 2,8 s; o erro por classe não muda).
+- *`BezierFitter`.* A tolerância já subia geometricamente até `statThreshFinal` (0,2 nos perfis de alta fidelidade; 0,5 a 10 nos de foto). O laço fazia uma varredura por rodada; agora as duas últimas rodadas repetem a varredura até nada mudar (no máximo 4), e o cronograma nunca desce. **Neutro nas imagens reais** (`FitBezier` 5,4 contra 5,4 s e 2,4 contra 2,3 s).
+
+**Testes (`edge_anchors_test`, 21; mais 4 em `sub_pixel_segmenter_test` e 4 campos em `parameter_filer_test`; a suíte inteira tem 30):** posição do perfil para bordas em x₀ = 10,0 a 11,3 (±0,02 px; fora da grade ±0,05), simetria de sinal na normal e na ordem das cores, borda desfocada (±0,06), perfil rejeitado com uma terceira cor, com um lado impuro e com cores iguais, argumentos inválidos; reta inclinada, círculo e traço de 2,2 px (alcance reduzido); só as âncoras andam, nunca as posições; teto do deslocamento; contraste baixo; canto = interseção, canto com braço curto fica; os lados retos seguem os cantos depois da suavização; moldura intocada; imagem de outro tamanho; motor inteiro; perfis de foto ligam e os de logo não; impressão digital e arquivo `.apf`.
+
+**Mutação:** 28 defeitos injetados (`mutation_anchors.ps1`: integral, pontas, desvio à reta, anel, regra do trapézio, ordem das cores, alcance, canto, interseção, teto, contraste, motor, perfis, impressão digital, praia e ilha), **27 detectados e 1 equivalente**. Dois escaparam na primeira rodada e viraram testes: o corte de t em 0..1 (E5: um anel de 30% do contraste empurra a borda 0,3 px sem o corte, 0,075 com ele) e a passada para o outro lado na praia (P4). O trabalho de escrever o teste do P4 achou **um defeito antigo**: o resto de uma praia era fundido ao lado escolhido pela cor dele mesmo se não o tocasse, e a união de regiões não adjacentes deixava o preto em dois pedaços (pixel escuro de uma praia que só encosta no lado claro). Agora o resto só se funde a uma dominante que ele toca. O equivalente, E17 (processar também as arestas do exterior), é uma guarda redundante: os nós dessas arestas estão todos na moldura e já saem pela bandeira `ImageBorder`.
+
+**O que continua aberto:**
+- O degrau de bloco 8×8 do JPEG numa borda reta: filtrar o deslocamento medido ao longo da aresta (um dente de 1 px não é borda) ou usar a fronteira de bloco como pista.
+- O canto arredondado de raio pequeno (4 px) é tratado como canto vivo ou fica na escadinha.
+- Fronteiras entre faixas de degradê de contraste baixo continuam na escadinha (sem medida confiável).
+- `anchorMinContrast` = 48 e `anchorReachPx` = 2,5 vêm de duas imagens e de cenas sintéticas.
+
 ---
 
 ## 2. Formulação matemática

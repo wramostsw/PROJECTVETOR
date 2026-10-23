@@ -1,0 +1,606 @@
+<title>Bancada cnx</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<style>
+/* Layout: barra de arquivos em cima, visor grande no meio, tabela de medidas e comandos embaixo. Tudo roda no navegador; nenhum arquivo sai do computador. */
+:root {
+  --bg: #f1f3ef;
+  --panel: #fbfcfa;
+  --ink: #18211f;
+  --muted: #56625e;
+  --line: #d3d9d4;
+  --stage: #dfe4df;
+  --accent: #0e6a5a;
+  --accent-ink: #ffffff;
+  --src-orig: #4b5753;
+  --src-a: #b24f1c;
+  --src-b: #2459ad;
+  --good: #1b7a45;
+  --bad: #b3261e;
+  --font-ui: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-data: "IBM Plex Mono", ui-monospace, "Cascadia Mono", Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #121715; --panel: #1a211f; --ink: #e3e9e5; --muted: #98a59f; --line: #2d3733; --stage: #0d1110;
+    --accent: #3fc3a8; --accent-ink: #07211b; --src-orig: #a9b6b0; --src-a: #f08a54; --src-b: #6ea2ee;
+    --good: #52c487; --bad: #ff8a80; color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #121715; --panel: #1a211f; --ink: #e3e9e5; --muted: #98a59f; --line: #2d3733; --stage: #0d1110;
+  --accent: #3fc3a8; --accent-ink: #07211b; --src-orig: #a9b6b0; --src-a: #f08a54; --src-b: #6ea2ee;
+  --good: #52c487; --bad: #ff8a80; color-scheme: dark;
+}
+* { box-sizing: border-box; }
+body { background: var(--bg); color: var(--ink); font-family: var(--font-ui); font-size: 14px; line-height: 1.45;
+  padding-block: 20px 40px; padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); }
+main { max-width: 1280px; margin: 0 auto; display: flex; flex-direction: column; gap: 16px; }
+h1 { font-size: 22px; font-weight: 600; margin: 0; letter-spacing: -0.01em; }
+h2 { font-size: 12px; font-weight: 600; margin: 0 0 10px; text-transform: uppercase; letter-spacing: 0.09em; color: var(--muted); }
+p { margin: 0; }
+.head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 16px; }
+.head p { color: var(--muted); max-width: 70ch; }
+.banner { border: 1px solid var(--line); background: var(--panel); border-left: 4px solid var(--accent); padding: 8px 12px; border-radius: 4px; color: var(--muted); }
+.banner[hidden] { display: none; }
+
+.slots { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+.slot { position: relative; display: flex; flex-direction: column; gap: 6px; padding: 12px; background: var(--panel); border: 1px dashed var(--line); border-top: 3px solid var(--c); border-radius: 4px; cursor: pointer; min-width: 0; }
+.slot.over { background: var(--stage); border-style: solid; }
+.slot:focus-within { outline: 2px solid var(--accent); outline-offset: 2px; }
+.slot input[type=file] { position: absolute; inset: 0; opacity: 0; cursor: pointer; width: 100%; height: 100%; }
+.slot .kind { font-weight: 600; color: var(--c); display: flex; gap: 8px; align-items: baseline; }
+.slot .file { font-family: var(--font-data); font-size: 12px; color: var(--ink); overflow-wrap: anywhere; }
+.slot .meta { font-size: 12px; color: var(--muted); }
+.slot .label { position: relative; z-index: 1; display: flex; gap: 6px; align-items: center; font-size: 12px; color: var(--muted); }
+.slot .label input { flex: 1; min-width: 0; font: inherit; color: var(--ink); background: var(--bg); border: 1px solid var(--line); border-radius: 3px; padding: 3px 6px; }
+#slot-orig { --c: var(--src-orig); } #slot-a { --c: var(--src-a); } #slot-b { --c: var(--src-b); }
+
+.engrow { display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: center; margin-bottom: 10px; }
+.engrow label { display: inline-flex; gap: 6px; align-items: center; color: var(--muted); }
+.engrow input[type=number] { width: 8ch; font: inherit; color: var(--ink); background: var(--bg); border: 1px solid var(--line); border-radius: 3px; padding: 4px 6px; }
+label.block { display: flex; flex-direction: column; gap: 4px; color: var(--muted); margin-bottom: 10px; }
+label.block textarea { font-family: var(--font-data); font-size: 12.5px; color: var(--ink); background: var(--bg); border: 1px solid var(--line); border-radius: 3px; padding: 6px 8px; resize: vertical; }
+.btn.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); font-weight: 600; }
+.btn:disabled { opacity: 0.5; cursor: progress; }
+#eng-log { max-height: 180px; overflow: auto; }
+code { font-family: var(--font-data); font-size: 12.5px; background: var(--bg); border: 1px solid var(--line); border-radius: 3px; padding: 1px 5px; }
+.tools { display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: center; }
+.seg { display: inline-flex; border: 1px solid var(--line); border-radius: 4px; overflow: hidden; background: var(--panel); }
+.seg button { border: 0; border-right: 1px solid var(--line); background: transparent; color: var(--ink); font: inherit; padding: 6px 12px; cursor: pointer; }
+.seg button:last-child { border-right: 0; }
+.seg button[aria-pressed=true] { background: var(--accent); color: var(--accent-ink); }
+button:focus-visible, select:focus-visible, input:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.btn { border: 1px solid var(--line); background: var(--panel); color: var(--ink); font: inherit; padding: 6px 10px; border-radius: 4px; cursor: pointer; }
+.btn:hover { border-color: var(--accent); }
+select { font: inherit; color: var(--ink); background: var(--panel); border: 1px solid var(--line); border-radius: 4px; padding: 5px 6px; }
+.tools label { display: inline-flex; gap: 6px; align-items: center; color: var(--muted); }
+.zoom { margin-left: auto; display: inline-flex; gap: 6px; align-items: center; }
+.zoom output { font-family: var(--font-data); min-width: 5ch; text-align: right; color: var(--muted); }
+
+.viewer { display: grid; gap: 8px; grid-template-columns: repeat(var(--cols, 1), minmax(0, 1fr)); height: clamp(320px, 62vh, 760px); touch-action: none; }
+.pane { position: relative; overflow: hidden; background: var(--stage); border: 1px solid var(--line); border-radius: 4px; cursor: grab; min-width: 0; }
+.pane.drag { cursor: grabbing; }
+.pane .tag { position: absolute; left: 8px; top: 8px; z-index: 5; font-size: 12px; font-weight: 600; padding: 2px 8px; border-radius: 3px; background: var(--panel); color: var(--c); border: 1px solid var(--c); pointer-events: none; }
+.layer { position: absolute; inset: 0; }
+.wrap { position: absolute; left: 0; top: 0; transform-origin: 0 0; background: #fff; }
+.wrap img, .wrap canvas { display: block; width: 100%; height: 100%; user-select: none; -webkit-user-drag: none; }
+.empty { color: var(--muted); display: grid; place-items: center; height: 100%; padding: 16px; text-align: center; }
+.wipe { display: flex; align-items: center; gap: 10px; }
+.wipe input { flex: 1; accent-color: var(--accent); }
+.legend { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--muted); }
+.legend .ramp { width: 160px; height: 10px; border-radius: 2px; background: linear-gradient(90deg, rgb(40,40,60), rgb(255,230,60), rgb(255,30,20)); }
+
+.cols { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr); gap: 16px; align-items: start; }
+.card { background: var(--panel); border: 1px solid var(--line); border-radius: 4px; padding: 14px; min-width: 0; }
+.tablewrap { overflow-x: auto; }
+table { border-collapse: collapse; width: 100%; font-variant-numeric: tabular-nums; }
+th, td { padding: 6px 10px; text-align: right; border-bottom: 1px solid var(--line); white-space: nowrap; }
+th:first-child, td:first-child { text-align: left; white-space: normal; }
+th { font-weight: 600; color: var(--muted); font-size: 12px; }
+td.num { font-family: var(--font-data); font-size: 13px; }
+tr.sub td:first-child { padding-left: 22px; color: var(--muted); }
+.good { color: var(--good); } .bad { color: var(--bad); } .flat { color: var(--muted); }
+th.a { color: var(--src-a); } th.b { color: var(--src-b); }
+.note { font-size: 12px; color: var(--muted); margin-top: 10px; max-width: 75ch; }
+.status { font-size: 12px; color: var(--muted); min-height: 1.4em; }
+pre { margin: 0; padding: 10px 12px; background: var(--bg); border: 1px solid var(--line); border-radius: 4px; font-family: var(--font-data); font-size: 12.5px; overflow-x: auto; white-space: pre; }
+.cmd { display: flex; flex-direction: column; gap: 6px; margin-bottom: 12px; }
+.cmd .row { display: flex; justify-content: space-between; align-items: center; gap: 8px; color: var(--muted); font-size: 12px; }
+
+@media (max-width: 760px) {
+  .slots { grid-template-columns: 1fr; }
+  .cols { grid-template-columns: 1fr; }
+  .viewer { grid-template-columns: 1fr; height: auto; }
+  .viewer .pane { height: 46vh; }
+  .zoom { margin-left: 0; }
+}
+@media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+</style>
+
+<main>
+  <div class="head">
+    <h1>Bancada cnx</h1>
+    <p>Solte uma imagem e o motor cnx a vetoriza. Compare o original com duas versões (antes e depois), com zoom sincronizado, cortina e mapa de erro. Tudo roda no seu computador.</p>
+  </div>
+  <div class="banner" id="banner">Exemplo carregado (círculo e retângulo sintéticos). Solte seus arquivos nos três campos abaixo para trocar.</div>
+
+  <section class="card" id="engine" aria-label="Motor">
+    <h2>Motor</h2>
+    <p class="note" id="eng-msg" style="margin:0 0 10px">Procurando o motor local…</p>
+    <div id="eng-ctl" hidden>
+      <div class="engrow">
+        <label>perfil <select id="eng-perfil">
+          <option value="">automático</option>
+          <option value="0">0 · logo com AA, alto</option><option value="1">1 · logo com AA, médio</option><option value="2">2 · logo com AA, baixo</option>
+          <option value="3">3 · logo sem AA, alto</option><option value="4">4 · logo sem AA, médio</option><option value="5">5 · logo sem AA, baixo</option>
+          <option value="6">6 · foto, alto</option><option value="7">7 · foto, médio</option><option value="8">8 · foto, baixo</option>
+          <option value="9">9 · personalizado</option></select></label>
+        <label>cores <input type="number" id="eng-cores" min="1" max="999" placeholder="auto"></label>
+        <label>limiar (níveis) <input type="number" id="eng-lim" min="1" step="any" placeholder="padrão"></label>
+        <label class="chk"><input type="checkbox" id="eng-auto" checked> vetorizar ao soltar o original</label>
+      </div>
+      <label class="block">parâmetros extras, um por linha (Classe::parametro valor; só valem com perfil 9)
+        <textarea id="eng-set" rows="2" spellcheck="false" placeholder="PixelSegmenter::ramp_max_depth 3"></textarea></label>
+      <div class="engrow">
+        <button type="button" class="btn primary" id="eng-run">Vetorizar</button>
+        <button type="button" class="btn" id="eng-pin">Fixar resultado como A</button>
+        <span class="note" id="eng-time"></span>
+      </div>
+      <pre id="eng-log" hidden></pre>
+    </div>
+  </section>
+
+  <section aria-label="Arquivos">
+    <div class="slots">
+      <label class="slot" id="slot-orig" data-kind="orig">
+        <span class="kind">Original</span>
+        <span class="file" id="f-orig">nenhum arquivo</span>
+        <span class="meta" id="m-orig">JPEG, PNG ou WebP. Solte aqui ou clique.</span>
+        <input type="file" id="in-orig" accept="image/*" aria-label="Imagem original">
+      </label>
+      <label class="slot" id="slot-a" data-kind="a">
+        <span class="kind">SVG A</span>
+        <span class="file" id="f-a">nenhum arquivo</span>
+        <span class="meta" id="m-a">Saída do cnx_cli. Solte aqui ou clique.</span>
+        <input type="file" id="in-a" accept=".svg,image/svg+xml" aria-label="SVG A">
+        <span class="label">nome <input type="text" id="lab-a" value="antes" aria-label="Nome do SVG A"></span>
+      </label>
+      <label class="slot" id="slot-b" data-kind="b">
+        <span class="kind">SVG B</span>
+        <span class="file" id="f-b">nenhum arquivo</span>
+        <span class="meta" id="m-b">Outra versão para comparar.</span>
+        <input type="file" id="in-b" accept=".svg,image/svg+xml" aria-label="SVG B">
+        <span class="label">nome <input type="text" id="lab-b" value="depois" aria-label="Nome do SVG B"></span>
+      </label>
+    </div>
+  </section>
+
+  <section aria-label="Visor" style="display:flex;flex-direction:column;gap:10px">
+    <div class="tools">
+      <div class="seg" role="group" aria-label="Modo">
+        <button type="button" id="mode-side" aria-pressed="true">Lado a lado</button>
+        <button type="button" id="mode-wipe" aria-pressed="false">Cortina</button>
+        <button type="button" id="mode-err" aria-pressed="false">Mapa de erro</button>
+      </div>
+      <span id="opts-wipe" hidden class="tools">
+        <label>esquerda <select id="sel-l"></select></label>
+        <label>direita <select id="sel-r"></select></label>
+      </span>
+      <span id="opts-err" hidden class="tools">
+        <label>erro de <select id="sel-e"></select></label>
+        <span class="legend">0 <span class="ramp"></span> 96+ níveis</span>
+      </span>
+      <div class="zoom">
+        <button type="button" class="btn" id="z-out" aria-label="Diminuir zoom">−</button>
+        <output id="z-val">100%</output>
+        <button type="button" class="btn" id="z-in" aria-label="Aumentar zoom">+</button>
+        <button type="button" class="btn" id="z-fit">Ajustar</button>
+        <button type="button" class="btn" id="z-one">1:1</button>
+      </div>
+    </div>
+    <div class="viewer" id="viewer"></div>
+    <div class="wipe" id="wipe" hidden><span>esquerda</span><input type="range" id="wipe-range" min="0" max="100" value="50" aria-label="Posição da cortina"><span>direita</span></div>
+    <p class="note">Arraste para mover e use a roda do mouse para o zoom; todos os painéis andam juntos. Acima de 300% a imagem original mostra os pixels.</p>
+  </section>
+
+  <div class="cols">
+    <section class="card" aria-label="Medidas">
+      <h2>Medidas</h2>
+      <div class="status" id="status" role="status"></div>
+      <div class="tablewrap">
+        <table id="tbl">
+          <thead><tr><th>Medida</th><th class="a" id="th-a">A</th><th class="b" id="th-b">B</th><th>B − A</th></tr></thead>
+          <tbody id="tbody"></tbody>
+        </table>
+      </div>
+      <p class="note">Erro = diferença de cor por pixel entre o original e o SVG desenhado sobre fundo branco, em níveis de 0 a 255 (raiz da média dos quadrados nos três canais). Classes pelo contraste local do original, janela 3×3: plano &lt; 8, suave 8–24, médio 24–64, forte ≥ 64 níveis. Faces contadas como elementos path e polygon; “pequena” é a caixa do elemento com menos de 10 px², uma aproximação da área real. Verde é melhora, vermelho é piora.</p>
+    </section>
+
+    <section class="card" aria-label="Comandos">
+      <h2>Gerar os SVGs</h2>
+      <div class="cmd"><div class="row"><span>automático</span><button type="button" class="btn copy" data-t="cnx_cli entrada.jpg saida.svg">Copiar</button></div><pre>cnx_cli entrada.jpg saida.svg</pre></div>
+      <div class="cmd"><div class="row"><span>com as etapas intermediárias (escadinha e suavizado)</span><button type="button" class="btn copy" data-t="cnx_cli --etapas entrada.jpg saida.svg">Copiar</button></div><pre>cnx_cli --etapas entrada.jpg saida.svg</pre></div>
+      <div class="cmd"><div class="row"><span>mudando um parâmetro (perfil 9 libera todos)</span><button type="button" class="btn copy" data-t="cnx_cli --perfil 9 --set PixelSegmenter::ramp_max_depth 3 entrada.jpg saida.svg">Copiar</button></div><pre>cnx_cli --perfil 9 --set PixelSegmenter::ramp_max_depth 3 entrada.jpg saida.svg</pre></div>
+      <p class="note">Rode dentro da pasta de build. Gere a versão antiga, guarde o SVG, mude o código, gere de novo e carregue os dois aqui. O programa imprime os tempos de cada etapa; esta página não mede tempo.</p>
+    </section>
+  </div>
+</main>
+
+<script>
+(() => {
+  'use strict';
+  const $ = (id) => document.getElementById(id);
+  const NS = { orig: 'Original', a: 'A', b: 'B' };
+  const state = {
+    orig: null,            // {name, url, w, h, data(Uint8ClampedArray), cls(Uint8Array)}
+    svg: { a: null, b: null }, // {name, text, url, bytes, faces, tiny}
+    metrics: { a: null, b: null },
+    heat: { a: null, b: null },
+    mode: 'side', dim: { w: 200, h: 120 },
+    view: { s: 1, tx: 0, ty: 0 },
+    token: 0
+  };
+
+  /* ---------- carregamento ---------- */
+  function loadImg(url) {
+    return new Promise((res, rej) => { const i = new Image(); i.onload = () => res(i); i.onerror = () => rej(new Error('imagem inválida')); i.src = url; });
+  }
+  async function setOriginal(blob, name) {
+    const url = URL.createObjectURL(blob);
+    const img = await loadImg(url);
+    const w = img.naturalWidth, h = img.naturalHeight;
+    const c = document.createElement('canvas'); c.width = w; c.height = h;
+    const x = c.getContext('2d', { willReadFrequently: true });
+    x.fillStyle = '#fff'; x.fillRect(0, 0, w, h); x.drawImage(img, 0, 0);
+    const data = x.getImageData(0, 0, w, h).data;
+    if (state.orig) URL.revokeObjectURL(state.orig.url);
+    state.orig = { name, url, w, h, data, cls: contrastClasses(data, w, h), blob };
+    $('f-orig').textContent = name;
+    $('m-orig').textContent = w + ' × ' + h + ' px';
+  }
+  function svgDims(text) {
+    const m = text.match(/<svg[^>]*>/i); if (!m) return null;
+    const tag = m[0];
+    const num = (k) => { const r = tag.match(new RegExp('\\b' + k + '\\s*=\\s*["\']\\s*([0-9.]+)')); return r ? parseFloat(r[1]) : null; };
+    const w = num('width'), h = num('height');
+    if (w && h) return { w, h };
+    const vb = tag.match(/viewBox\s*=\s*["']\s*[-0-9.]+[ ,]+[-0-9.]+[ ,]+([0-9.]+)[ ,]+([0-9.]+)/i);
+    return vb ? { w: parseFloat(vb[1]), h: parseFloat(vb[2]) } : null;
+  }
+  function faceStats(text) {
+    const doc = new DOMParser().parseFromString(text, 'image/svg+xml');
+    if (doc.querySelector('parsererror')) throw new Error('SVG inválido');
+    doc.querySelectorAll('script,foreignObject,style').forEach((n) => n.remove());
+    doc.querySelectorAll('*').forEach((n) => { for (const a of Array.from(n.attributes)) if (/^on/i.test(a.name)) n.removeAttribute(a.name); });
+    const holder = document.createElement('div');
+    holder.style.cssText = 'position:absolute;left:-99999px;top:0;width:0;height:0;overflow:hidden';
+    const svg = document.importNode(doc.documentElement, true);
+    holder.append(svg); document.body.append(holder);
+    let faces = 0, tiny = 0;
+    try {
+      svg.querySelectorAll('path,polygon').forEach((p) => {
+        faces++;
+        try { const b = p.getBBox(); if (b.width * b.height < 10) tiny++; } catch (e) { /* elemento sem caixa */ }
+      });
+    } finally { holder.remove(); }
+    return { faces, tiny };
+  }
+  // `auto`: SVG do exemplo ou do motor; some quando chega outra imagem original. Os carregados à mão ficam.
+  async function setSvg(key, text, name, auto) {
+    const stats = faceStats(text);
+    const old = state.svg[key]; if (old) URL.revokeObjectURL(old.url);
+    const url = URL.createObjectURL(new Blob([text], { type: 'image/svg+xml' }));
+    state.svg[key] = { name, text, url, auto: !!auto, bytes: new Blob([text]).size, ...stats, dim: svgDims(text) };
+    $('f-' + key).textContent = name;
+    $('m-' + key).textContent = stats.faces + ' faces, ' + (state.svg[key].bytes / 1024).toFixed(1) + ' KB';
+  }
+  function clearSvg(key) {
+    const old = state.svg[key]; if (old) URL.revokeObjectURL(old.url);
+    state.svg[key] = null; state.metrics[key] = null; state.heat[key] = null;
+    $('f-' + key).textContent = 'nenhum arquivo';
+    $('m-' + key).textContent = key === 'a' ? 'Saída do cnx_cli. Solte aqui ou clique.' : 'Outra versão para comparar.';
+  }
+
+  /* ---------- medidas ---------- */
+  function contrastClasses(d, w, h) {
+    const L = new Float32Array(w * h);
+    for (let i = 0; i < w * h; i++) L[i] = 0.299 * d[4 * i] + 0.587 * d[4 * i + 1] + 0.114 * d[4 * i + 2];
+    const cls = new Uint8Array(w * h);
+    for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+      let lo = 1e9, hi = -1e9;
+      for (let j = Math.max(0, y - 1); j <= Math.min(h - 1, y + 1); j++) for (let i = Math.max(0, x - 1); i <= Math.min(w - 1, x + 1); i++) {
+        const v = L[j * w + i]; if (v < lo) lo = v; if (v > hi) hi = v;
+      }
+      const c = hi - lo;
+      cls[y * w + x] = c < 8 ? 0 : c < 24 ? 1 : c < 64 ? 2 : 3;
+    }
+    return cls;
+  }
+  async function rasterize(text, w, h) {
+    const url = URL.createObjectURL(new Blob([text], { type: 'image/svg+xml' }));
+    try {
+      const img = await loadImg(url);
+      const c = document.createElement('canvas'); c.width = w; c.height = h;
+      const x = c.getContext('2d', { willReadFrequently: true });
+      x.fillStyle = '#fff'; x.fillRect(0, 0, w, h); x.drawImage(img, 0, 0, w, h);
+      return x.getImageData(0, 0, w, h).data;
+    } finally { URL.revokeObjectURL(url); }
+  }
+  async function measure(key) {
+    const o = state.orig, s = state.svg[key];
+    const r = await rasterize(s.text, o.w, o.h);
+    const sum = [0, 0, 0, 0], cnt = [0, 0, 0, 0];
+    const heat = new Uint8ClampedArray(o.w * o.h * 4);
+    for (let i = 0; i < o.w * o.h; i++) {
+      const dr = r[4 * i] - o.data[4 * i], dg = r[4 * i + 1] - o.data[4 * i + 1], db = r[4 * i + 2] - o.data[4 * i + 2];
+      const q = (dr * dr + dg * dg + db * db) / 3;
+      const k = o.cls[i]; sum[k] += q; cnt[k]++;
+      const t = Math.min(1, Math.sqrt(q) / 96);
+      let R, G, B;
+      if (t < 0.5) { const u = t * 2; R = 40 + 215 * u; G = 40 + 190 * u; B = 60 * (1 - u) + 60 * u * 0 + 60 * (1 - u); }
+      else { const u = (t - 0.5) * 2; R = 255; G = 230 - 200 * u; B = 60 - 40 * u; }
+      heat[4 * i] = R; heat[4 * i + 1] = G; heat[4 * i + 2] = B; heat[4 * i + 3] = 255;
+    }
+    const tot = sum[0] + sum[1] + sum[2] + sum[3], n = o.w * o.h;
+    state.metrics[key] = {
+      total: Math.sqrt(tot / n),
+      cls: sum.map((v, i) => (cnt[i] ? Math.sqrt(v / cnt[i]) : null)),
+      cnt
+    };
+    const c = document.createElement('canvas'); c.width = o.w; c.height = o.h;
+    c.getContext('2d').putImageData(new ImageData(heat, o.w, o.h), 0, 0);
+    state.heat[key] = c;
+  }
+  async function measureAll() {
+    const my = ++state.token;
+    state.metrics = { a: null, b: null }; state.heat = { a: null, b: null };
+    if (!state.orig) { $('status').textContent = 'Carregue a imagem original para medir o erro.'; renderTable(); return; }
+    $('status').textContent = 'Medindo…';
+    for (const k of ['a', 'b']) {
+      if (!state.svg[k]) continue;
+      try { await measure(k); } catch (e) { $('status').textContent = 'Falha ao desenhar o SVG ' + NS[k] + ': ' + e.message; }
+      if (my !== state.token) return;
+    }
+    $('status').textContent = '';
+    renderTable(); if (state.mode === 'err') buildViewer();
+  }
+
+  /* ---------- tabela ---------- */
+  const fmt = (v, d) => (v == null ? '—' : v.toFixed(d));
+  function renderTable() {
+    $('th-a').textContent = $('lab-a').value || 'A'; $('th-b').textContent = $('lab-b').value || 'B';
+    const A = state.svg.a, B = state.svg.b, MA = state.metrics.a, MB = state.metrics.b;
+    const rows = [
+      ['Faces', A && A.faces, B && B.faces, 0, ''],
+      ['Faces pequenas (caixa &lt; 10 px²)', A && A.tiny, B && B.tiny, 0, 'sub'],
+      ['Tamanho (KB)', A && A.bytes / 1024, B && B.bytes / 1024, 1, ''],
+      ['Erro total', MA && MA.total, MB && MB.total, 2, ''],
+      ['Erro em áreas planas', MA && MA.cls[0], MB && MB.cls[0], 2, 'sub'],
+      ['Erro em contraste suave', MA && MA.cls[1], MB && MB.cls[1], 2, 'sub'],
+      ['Erro em contraste médio', MA && MA.cls[2], MB && MB.cls[2], 2, 'sub'],
+      ['Erro em borda forte', MA && MA.cls[3], MB && MB.cls[3], 2, 'sub']
+    ];
+    $('tbody').innerHTML = rows.map(([name, a, b, d, cls]) => {
+      const has = typeof a === 'number' && typeof b === 'number';
+      let delta = '—', c = 'flat';
+      if (has) { const x = b - a; delta = (x > 0 ? '+' : x < 0 ? '−' : '') + Math.abs(x).toFixed(d); c = Math.abs(x) < Math.pow(10, -d) / 2 ? 'flat' : x < 0 ? 'good' : 'bad'; }
+      return '<tr class="' + cls + '"><td>' + name + '</td><td class="num">' + (typeof a === 'number' ? a.toFixed(d) : '—') + '</td><td class="num">' + (typeof b === 'number' ? b.toFixed(d) : '—') + '</td><td class="num ' + c + '">' + delta + '</td></tr>';
+    }).join('');
+  }
+
+  /* ---------- visor ---------- */
+  function sourceList() {
+    const list = [];
+    if (state.orig) list.push({ key: 'orig', name: 'Original' });
+    if (state.svg.a) list.push({ key: 'a', name: $('lab-a').value || 'A' });
+    if (state.svg.b) list.push({ key: 'b', name: $('lab-b').value || 'B' });
+    return list;
+  }
+  function content(key, errFor) {
+    if (errFor) { const c = state.heat[errFor]; if (!c) return null; const k = document.createElement('canvas'); k.width = c.width; k.height = c.height; k.getContext('2d').drawImage(c, 0, 0); k.className = 'px'; return k; }
+    const i = document.createElement('img'); i.alt = ''; i.draggable = false;
+    i.src = key === 'orig' ? state.orig.url : state.svg[key].url;
+    if (key === 'orig') i.classList.add('px');
+    return i;
+  }
+  function makePane(src, color, tagText, errFor, clip) {
+    const pane = document.createElement('div'); pane.className = 'pane'; pane.style.setProperty('--c', color);
+    pane.appendChild(layer(src, errFor, clip));
+    const t = document.createElement('div'); t.className = 'tag'; t.textContent = tagText; pane.appendChild(t);
+    return pane;
+  }
+  function layer(src, errFor, clip) {
+    const l = document.createElement('div'); l.className = 'layer';
+    if (clip) l.dataset.clip = '1';
+    const w = document.createElement('div'); w.className = 'wrap'; w.style.width = state.dim.w + 'px'; w.style.height = state.dim.h + 'px';
+    const c = content(src, errFor);
+    if (c) w.appendChild(c); l.appendChild(w); return l;
+  }
+  const colorOf = (k) => 'var(--src-' + k + ')';
+  function fillSelect(sel, list, keep, def) {
+    const prev = keep && list.some((s) => s.key === keep) ? keep : def;
+    sel.innerHTML = list.map((s) => '<option value="' + s.key + '">' + s.name.replace(/</g, '&lt;') + '</option>').join('');
+    if (prev) sel.value = prev;
+  }
+  function buildViewer() {
+    const v = $('viewer'); v.innerHTML = '';
+    const list = sourceList();
+    const d = state.orig ? { w: state.orig.w, h: state.orig.h } : (state.svg.a && state.svg.a.dim) || (state.svg.b && state.svg.b.dim) || state.dim;
+    state.dim = d;
+    fillSelect($('sel-l'), list, $('sel-l').value, list[0] && list[0].key);
+    fillSelect($('sel-r'), list, $('sel-r').value, (list[1] || list[0] || {}).key);
+    const errList = list.filter((s) => s.key !== 'orig');
+    fillSelect($('sel-e'), errList, $('sel-e').value, errList[0] && errList[0].key);
+    $('opts-wipe').hidden = state.mode !== 'wipe'; $('opts-err').hidden = state.mode !== 'err'; $('wipe').hidden = state.mode !== 'wipe';
+    if (!list.length) { v.style.setProperty('--cols', 1); v.innerHTML = '<div class="empty pane">Carregue a imagem original e os SVGs nos campos acima.</div>'; return; }
+    if (state.mode === 'side') {
+      v.style.setProperty('--cols', list.length);
+      list.forEach((s) => v.appendChild(makePane(s.key, colorOf(s.key), s.name)));
+    } else if (state.mode === 'wipe') {
+      v.style.setProperty('--cols', 1);
+      const l = $('sel-l').value, r = $('sel-r').value;
+      const pane = makePane(l, colorOf(l), '', null, false);
+      pane.querySelector('.tag').remove();
+      const top = layer(r, null, true); pane.appendChild(top);
+      const tl = document.createElement('div'); tl.className = 'tag'; tl.style.setProperty('--c', colorOf(l)); tl.textContent = nameOf(l);
+      const tr = document.createElement('div'); tr.className = 'tag'; tr.style.cssText = 'left:auto;right:8px;--c:' + colorOf(r); tr.textContent = nameOf(r);
+      pane.append(tl, tr); v.appendChild(pane); applyWipe();
+    } else {
+      v.style.setProperty('--cols', 1);
+      const e = $('sel-e').value;
+      if (!e || !state.heat[e]) { v.innerHTML = '<div class="empty pane">' + (state.orig ? (e ? 'Medindo o erro…' : 'Carregue um SVG para ver o mapa de erro.') : 'O mapa de erro precisa da imagem original.') + '</div>'; return; }
+      v.appendChild(makePane('orig', colorOf(e), 'erro de ' + nameOf(e), e));
+    }
+    fit();
+  }
+  const nameOf = (k) => (k === 'orig' ? 'Original' : (k === 'a' ? $('lab-a').value || 'A' : $('lab-b').value || 'B'));
+  function applyWipe() {
+    const p = +$('wipe-range').value, top = document.querySelector('#viewer .layer[data-clip]');
+    if (top) top.style.clipPath = 'inset(0 0 0 ' + p + '%)';
+  }
+  function paneRect() { const p = document.querySelector('#viewer .pane'); return p ? p.getBoundingClientRect() : { width: 600, height: 400 }; }
+  function fit() {
+    const r = paneRect(), s = Math.min(r.width / state.dim.w, r.height / state.dim.h) * 0.96;
+    state.view = { s, tx: (r.width - state.dim.w * s) / 2, ty: (r.height - state.dim.h * s) / 2 }; applyView();
+  }
+  function applyView() {
+    const { s, tx, ty } = state.view;
+    document.querySelectorAll('#viewer .wrap').forEach((w) => { w.style.transform = 'translate(' + tx + 'px,' + ty + 'px) scale(' + s + ')'; });
+    document.querySelectorAll('#viewer .wrap .px').forEach((e) => { e.style.imageRendering = s >= 3 ? 'pixelated' : 'auto'; });
+    $('z-val').textContent = Math.round(s * 100) + '%';
+  }
+  function zoomAt(f, cx, cy) {
+    const v = state.view, ns = Math.min(64, Math.max(0.05, v.s * f));
+    v.tx = cx - (cx - v.tx) * ns / v.s; v.ty = cy - (cy - v.ty) * ns / v.s; v.s = ns; applyView();
+  }
+  const viewer = $('viewer');
+  viewer.addEventListener('wheel', (e) => {
+    const p = e.target.closest('.pane'); if (!p) return; e.preventDefault();
+    const r = p.getBoundingClientRect(); zoomAt(e.deltaY < 0 ? 1.18 : 1 / 1.18, e.clientX - r.left, e.clientY - r.top);
+  }, { passive: false });
+  let drag = null;
+  viewer.addEventListener('pointerdown', (e) => { const p = e.target.closest('.pane'); if (!p) return; drag = { x: e.clientX, y: e.clientY, tx: state.view.tx, ty: state.view.ty, p }; p.classList.add('drag'); p.setPointerCapture(e.pointerId); });
+  viewer.addEventListener('pointermove', (e) => { if (!drag) return; state.view.tx = drag.tx + e.clientX - drag.x; state.view.ty = drag.ty + e.clientY - drag.y; applyView(); });
+  const endDrag = () => { if (drag) drag.p.classList.remove('drag'); drag = null; };
+  viewer.addEventListener('pointerup', endDrag); viewer.addEventListener('pointercancel', endDrag);
+  const center = () => { const r = paneRect(); return [r.width / 2, r.height / 2]; };
+  $('z-in').onclick = () => zoomAt(1.4, ...center());
+  $('z-out').onclick = () => zoomAt(1 / 1.4, ...center());
+  $('z-fit').onclick = fit;
+  $('z-one').onclick = () => { const [cx, cy] = center(); zoomAt(1 / state.view.s, cx, cy); };
+  window.addEventListener('resize', () => { if (document.querySelector('#viewer .pane')) fit(); });
+
+  /* ---------- controles ---------- */
+  const modes = { side: 'mode-side', wipe: 'mode-wipe', err: 'mode-err' };
+  Object.entries(modes).forEach(([m, id]) => { $(id).onclick = () => { state.mode = m; Object.entries(modes).forEach(([k, i]) => $(i).setAttribute('aria-pressed', String(k === m))); buildViewer(); }; });
+  ['sel-l', 'sel-r', 'sel-e'].forEach((id) => $(id).addEventListener('change', buildViewer));
+  $('wipe-range').addEventListener('input', applyWipe);
+  ['lab-a', 'lab-b'].forEach((id) => $(id).addEventListener('input', () => { renderTable(); const st = state.view; buildViewer(); state.view = st; applyView(); }));
+  document.querySelectorAll('.copy').forEach((b) => b.addEventListener('click', async () => {
+    const t = b.dataset.t;
+    try { await navigator.clipboard.writeText(t); b.textContent = 'Copiado'; }
+    catch (e) { const r = document.createRange(); r.selectNodeContents(b.closest('.cmd').querySelector('pre')); const s = getSelection(); s.removeAllRanges(); s.addRange(r); b.textContent = 'Selecionado'; }
+    setTimeout(() => { b.textContent = 'Copiar'; }, 1400);
+  }));
+
+  async function handleFile(kind, file) {
+    if (!file) return;
+    $('banner').hidden = true;
+    try {
+      if (kind === 'orig') {
+        await setOriginal(file, file.name);
+        ['a', 'b'].forEach((k) => { if (state.svg[k] && state.svg[k].auto) clearSvg(k); });  // eram de outra imagem
+      } else await setSvg(kind, await file.text(), file.name, false);
+    } catch (e) { $('status').textContent = 'Não consegui abrir ' + file.name + ': ' + e.message; return; }
+    buildViewer(); renderTable(); measureAll();
+    if (kind === 'orig' && ENG.ok && $('eng-auto').checked) vectorize();
+  }
+
+  /* ---------- motor (servidor local) ---------- */
+  const ENG = { ok: false, busy: false, runs: 0 };
+  async function detectEngine() {
+    const msg = $('eng-msg');
+    try {
+      const r = await fetch('/api/status', { cache: 'no-store' });
+      const j = await r.json();
+      if (!j || !j.ok) throw new Error('sem motor');
+      ENG.ok = true; $('eng-ctl').hidden = false;
+      msg.textContent = 'Motor ligado: ' + j.exe + ', compilado em ' + new Date(j.built).toLocaleString('pt-BR') + '. Solte uma imagem no campo Original para vetorizar.';
+    } catch (e) {
+      msg.innerHTML = 'Esta cópia da página não alcança o motor. Para vetorizar aqui, rode <code>node tools\\bancada_server.js</code> na pasta do projeto e abra <code>http://127.0.0.1:8765</code>. Sem isso, carregue SVGs já gerados nos campos A e B.';
+    }
+  }
+  async function pngBlob() {
+    const o = state.orig, c = document.createElement('canvas'); c.width = o.w; c.height = o.h;
+    c.getContext('2d').putImageData(new ImageData(new Uint8ClampedArray(o.data), o.w, o.h), 0, 0);
+    return new Promise((r) => c.toBlob(r, 'image/png'));
+  }
+  async function vectorize() {
+    if (!ENG.ok || !state.orig || ENG.busy) return;
+    ENG.busy = true; $('eng-run').disabled = true; $('eng-log').hidden = true;
+    const t0 = performance.now(), tick = () => { $('eng-time').textContent = 'Vetorizando… ' + ((performance.now() - t0) / 1000).toFixed(0) + ' s'; };
+    tick(); const timer = setInterval(tick, 500);
+    try {
+      const b = state.orig.blob;
+      const body = b && (b.type === 'image/png' || b.type === 'image/jpeg') ? b : await pngBlob();  // o motor lê PNG e JPEG
+      const q = new URLSearchParams();
+      if ($('eng-perfil').value) q.set('perfil', $('eng-perfil').value);
+      if ($('eng-cores').value) q.set('cores', $('eng-cores').value);
+      if ($('eng-lim').value) q.set('limiar', $('eng-lim').value);
+      $('eng-set').value.split('\n').map((s) => s.trim()).filter(Boolean).forEach((s) => q.append('set', s));
+      const r = await fetch('/api/vectorize?' + q, { method: 'POST', body, headers: { 'Content-Type': 'application/octet-stream' } });
+      const j = await r.json();
+      $('eng-log').textContent = j.log || ''; $('eng-log').hidden = !j.log;
+      if (!j.ok) throw new Error(j.error || 'falha');
+      ENG.runs++;
+      const key = state.svg.a ? 'b' : 'a';  // o primeiro resultado é o A; os seguintes vão para o B
+      const perfil = (j.log.match(/perfil (\d+)/) || [])[1];
+      await setSvg(key, j.svg, 'cnx-' + ENG.runs + '.svg', true);
+      $('lab-' + key).value = 'cnx ' + ENG.runs + (perfil ? ', perfil ' + perfil : '') + ', ' + j.seconds.toFixed(1) + ' s';
+      $('eng-time').textContent = 'Pronto em ' + j.seconds.toFixed(1) + ' s, gravado no campo ' + key.toUpperCase() + '.';
+      $('banner').hidden = true;
+      buildViewer(); renderTable(); measureAll();
+    } catch (e) {
+      $('eng-time').textContent = 'Falhou: ' + e.message;
+    } finally { clearInterval(timer); ENG.busy = false; $('eng-run').disabled = false; }
+  }
+  $('eng-run').onclick = vectorize;
+  $('eng-pin').onclick = async () => {
+    if (!state.svg.b) { $('eng-time').textContent = 'Ainda não há resultado no campo B para fixar.'; return; }
+    await setSvg('a', state.svg.b.text, state.svg.b.name, true); $('lab-a').value = $('lab-b').value;
+    buildViewer(); renderTable(); measureAll();
+    $('eng-time').textContent = 'O resultado do B agora é o A. Mude o motor ou os parâmetros e vetorize de novo.';
+  };
+  detectEngine();
+  document.querySelectorAll('.slot').forEach((s) => {
+    const kind = s.dataset.kind;
+    s.querySelector('input[type=file]').addEventListener('change', (e) => { handleFile(kind, e.target.files[0]); e.target.value = ''; });
+    s.addEventListener('dragover', (e) => { e.preventDefault(); s.classList.add('over'); });
+    s.addEventListener('dragleave', () => s.classList.remove('over'));
+    s.addEventListener('drop', (e) => { e.preventDefault(); s.classList.remove('over'); handleFile(kind, e.dataTransfer.files[0]); });
+  });
+  s_labelGuard();
+  function s_labelGuard() { document.querySelectorAll('.slot .label').forEach((l) => l.addEventListener('click', (e) => e.stopPropagation())); }
+
+  /* ---------- exemplo ---------- */
+  async function loadSample() {
+    const W = 200, H = 120, c = document.createElement('canvas'); c.width = W; c.height = H;
+    const x = c.getContext('2d'); x.fillStyle = '#fff'; x.fillRect(0, 0, W, H);
+    try { x.filter = 'blur(0.9px)'; } catch (e) { /* sem filtro */ }
+    x.fillStyle = '#1f5fbf'; x.beginPath(); x.arc(60, 60, 34, 0, Math.PI * 2); x.fill();
+    x.fillStyle = '#222a2a'; x.beginPath(); x.roundRect ? x.roundRect(110, 28, 70, 64, 9) : x.rect(110, 28, 70, 64); x.fill();
+    const blob = await new Promise((r) => c.toBlob(r, 'image/png'));
+    const head = '<svg xmlns="http://www.w3.org/2000/svg" width="200" height="120" viewBox="0 0 200 120"><rect width="200" height="120" fill="#fff"/>';
+    const poly = []; for (let i = 0; i < 10; i++) { const a = i / 10 * Math.PI * 2; poly.push((60 + 34 * Math.cos(a)).toFixed(1) + ',' + (60 + 34 * Math.sin(a)).toFixed(1)); }
+    const A = head + '<polygon points="' + poly.join(' ') + '" fill="#1f5fbf"/><rect x="110" y="28" width="70" height="64" fill="#222a2a"/></svg>';
+    const B = head + '<circle cx="60" cy="60" r="34" fill="#1f5fbf"/><rect x="110" y="28" width="70" height="64" rx="9" fill="#222a2a"/></svg>';
+    await setOriginal(blob, 'exemplo.png'); await setSvg('a', A, 'exemplo-antes.svg', true); await setSvg('b', B, 'exemplo-depois.svg', true);
+    buildViewer(); renderTable(); measureAll();
+  }
+  renderTable(); buildViewer();
+  loadSample().catch((e) => { $('status').textContent = 'Exemplo indisponível: ' + e.message; });
+})();
+</script>

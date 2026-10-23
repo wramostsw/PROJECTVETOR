@@ -180,6 +180,14 @@ struct SmoothParams {
     /// Só a mola é pesada: a medição generativa já usa os pixels.
     double contrastFullLevels = 0.0;
     double contrastFloor = 0.05;
+    /// Posição sub-pixel das bordas (docs §1.31): as âncoras da mola de fidelidade passam da escadinha para a borda medida
+    /// pela cobertura dos pixels de transição, ao longo da normal (±`anchorReachPx`). Só nós de fronteiras com contraste
+    /// ≥ `anchorMinContrast` níveis, fora de cantos e junções; o deslocamento é limitado a `anchorMaxShiftPx`. Desligado por
+    /// padrão; os perfis de foto/degradê ligam (os de logo com AA já medem a imagem pelo modelo gerador).
+    bool subPixelAnchors = false;
+    double anchorReachPx = 2.5;
+    double anchorMaxShiftPx = 1.0;
+    double anchorMinContrast = 48.0;  ///< medido no degradê (docs §1.31): com 24 a classe de contraste suave piora 8 %, com 48 melhora 9 %
     int punctureOnPhase = 0;             ///< índice 0-based: na 1ª fase, sobre a escadinha (depois dela os cantos já se arredondaram)
     int maxCgIterations = 200;            ///< por fase
     double maxNodeStepPx = 0.5;           ///< região de confiança da busca em linha (§2.3)

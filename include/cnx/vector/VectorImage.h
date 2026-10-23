@@ -91,6 +91,8 @@ public:
     void setPosition(NodeId n, sla::Vec2 p) noexcept { pos_[ix(n)] = p; }
     /// Posição na escadinha inicial (âncora da mola de fidelidade).
     sla::Vec2 originalPosition(NodeId n) const noexcept { return origin_[ix(n)]; }
+    /// Move a âncora da mola de fidelidade sem mexer na posição (posição sub-pixel das bordas, EdgeAnchors.h).
+    void setOriginalPosition(NodeId n, sla::Vec2 p) noexcept { origin_[ix(n)] = p; }
     std::uint8_t flags(NodeId n) const noexcept { return flags_[ix(n)]; }
     void setFlags(NodeId n, std::uint8_t f) noexcept { flags_[ix(n)] = f; }
 

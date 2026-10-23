@@ -19,6 +19,7 @@
 #include "cnx/segment/SubPixelSegmenter.h"
 #include "cnx/vector/BoundaryTracer.h"
 #include "cnx/vector/ContourSmoother.h"
+#include "cnx/vector/EdgeAnchors.h"
 #include "cnx/vector/GenerativeModel.h"
 #include "cnx/vector/VectorImage.h"
 
@@ -293,6 +294,7 @@ RunOutcome runPipeline(const RunConfig& cfg, Stage target, const std::stop_token
                     }
                     case Stage::SmoothContours: {
                         TraceResult traced = BoundaryTracer().trace(*next->segmentation, stop);
+                        if (eff.smooth.subPixelAnchors) refineEdgeAnchors(traced.image, next->preprocessed->image, eff.smooth);
                         std::optional<GenerativeModel> model;
                         if (anyGenerative(eff.smooth)) model.emplace(next->preprocessed->signal.premultiplied());  // float, sem quantizar
                         ContourSmoother(eff.smooth, model ? &*model : nullptr).run(traced.image, ctx);

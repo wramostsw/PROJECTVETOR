@@ -19,6 +19,8 @@ constexpr std::uint32_t kMeanFallbackBelow = 3;  // §4: a média só é fallbac
 constexpr std::array<int, 4> kDx4{1, 0, -1, 0};
 constexpr std::array<int, 4> kDy4{0, 1, 0, -1};
 
+constexpr double kRampSpread = 0.3;  // variação mínima de t numa faixa de 3 px para ser rampa de AA e não uma tira cinza
+
 constexpr std::size_t ux(std::int32_t i) noexcept { return static_cast<std::size_t>(i); }
 
 /// Cor de uma região: mediana por canal (média abaixo de 3 pixels).
@@ -187,6 +189,7 @@ int SubPixelSegmenter::mergeMicroRegions(PixelMap& map) const {
     RegionForest& forest = map.forest();
     ColorCache cc(map);
     int total = 0;
+    std::vector<std::pair<int, int>> island;
     for (int size = 1; size <= params_.microRegionMaxPixels; ++size) {
         for (bool changed = true; changed;) {
             changed = false;
@@ -197,9 +200,22 @@ int SubPixelSegmenter::mergeMicroRegions(PixelMap& map) const {
                 if (n == 0 || n > static_cast<std::uint32_t>(size)) continue;
                 const RegionId best = closestNeighbor(forest, r, [&](RegionId q) { return cc.get(q); });
                 if (best == kNoRegion) continue;  // região única da imagem
+                // Pixels da ilha, antes da fusão: a cor deles (quase sempre mistura de antialiasing) não deve entrar na
+                // mediana da vizinha que a absorve, senão a vizinha ganha uma franja do tom da ilha.
+                island.clear();
+                {
+                    const RegionStats& st = forest.stats(r);
+                    for (int y = st.minY; y <= st.maxY; ++y) {
+                        for (int x = st.minX; x <= st.maxX; ++x) {
+                            if (map.regionAtConst(x, y) == r) island.emplace_back(x, y);
+                        }
+                    }
+                }
                 cc.invalidate(r);
                 cc.invalidate(best);
-                cc.invalidate(forest.unite(r, best));
+                const RegionId root = forest.unite(r, best);
+                for (const auto& [x, y] : island) map.excludeFromColorStats(x, y, image_(x, y));
+                cc.invalidate(root);
                 ++total;
                 changed = true;
             }
@@ -221,6 +237,7 @@ SubPixelSegmenter::BeachResult SubPixelSegmenter::splitAndMergeBeaches(PixelMap&
     std::vector<std::pair<int, int>> pixels;
     std::vector<RegionId> sides;
     std::vector<std::uint8_t> done;
+    std::vector<std::uint8_t> depth;
     for (std::size_t i = 0; i < cap; ++i) {
         const auto r = static_cast<RegionId>(i);
         if (!forest.isRoot(r) || forest.pixelCount(r) == 0) continue;
@@ -251,12 +268,22 @@ SubPixelSegmenter::BeachResult SubPixelSegmenter::splitAndMergeBeaches(PixelMap&
         const Rgba off = (cr - ca) - v * static_cast<float>(t);
         if (std::sqrt(sla::dot(off, off)) > params_.beachLineTolerance * std::sqrt(vv)) continue;
 
-        // Fina: nenhum pixel interior (todo pixel toca outra região ou a borda da imagem).
+        // Fina: sem núcleo. Uma rampa de antialiasing tem 1 a 3 px de espessura. Profundidade 1 = o pixel toca outra região
+        // ou a borda da imagem; 2 = os 4 vizinhos são da região; 3 = os 4 vizinhos também têm profundidade 2. A praia não
+        // tem profundidade 3 e os pixels de profundidade 2 são minoria (≤ ⅓): uma rampa de 3 px (os dois lados de 1 px e uma
+        // linha central) entra; um traço de 4 px ou mais é desenho, não transição, e fica como está.
         const RegionStats& st = forest.stats(r);
+        const int boxX = st.minX;
+        const int boxY = st.minY;
+        const int boxMaxX = st.maxX;
+        const int boxMaxY = st.maxY;  // cópias: a caixa muda ao mover pixels
+        const auto boxW = static_cast<std::size_t>(boxMaxX - boxX + 1);
+        const auto boxH = static_cast<std::size_t>(boxMaxY - boxY + 1);
+        const auto cell = [&](int x, int y) { return static_cast<std::size_t>(y - boxY) * boxW + static_cast<std::size_t>(x - boxX); };
         pixels.clear();
-        bool interior = false;
-        for (int y = st.minY; y <= st.maxY && !interior; ++y) {
-            for (int x = st.minX; x <= st.maxX; ++x) {
+        depth.assign(boxW * boxH, 0);
+        for (int y = boxY; y <= boxMaxY; ++y) {
+            for (int x = boxX; x <= boxMaxX; ++x) {
                 if (map.regionAtConst(x, y) != r) continue;
                 pixels.emplace_back(x, y);
                 bool inside = true;
@@ -265,13 +292,34 @@ SubPixelSegmenter::BeachResult SubPixelSegmenter::splitAndMergeBeaches(PixelMap&
                     const int qy = y + kDy4[d];
                     inside = qx >= 0 && qy >= 0 && qx < w && qy < h && map.regionAtConst(qx, qy) == r;
                 }
-                if (inside) {
-                    interior = true;
-                    break;
-                }
+                depth[cell(x, y)] = inside ? 2 : 1;
             }
         }
-        if (interior) continue;
+        bool core = false;
+        std::size_t deeper = 0;
+        for (const auto& [x, y] : pixels) {
+            if (depth[cell(x, y)] != 2) continue;
+            ++deeper;
+            bool surrounded = true;  // os vizinhos de um pixel de profundidade 2 são da região, logo estão na caixa
+            for (std::size_t d = 0; d < 4 && surrounded; ++d) surrounded = depth[cell(x + kDx4[d], y + kDy4[d])] == 2;
+            if (surrounded) {
+                core = true;
+                break;
+            }
+        }
+        if (core || 3 * deeper > pixels.size()) continue;
+        if (deeper > 0) {
+            // Uma faixa de 3 px de tom CONSTANTE entre as duas é uma tira do desenho (um cinza de verdade); a rampa de
+            // antialiasing tem tons que variam de um lado ao outro, de perto da cor A até perto da B.
+            double lo = 1e9;
+            double hi = -1e9;
+            for (const auto& [x, y] : pixels) {
+                const double tp = sla::dot(sla::toRgba(image_(x, y)) - ca, v) / vv;
+                lo = std::min(lo, tp);
+                hi = std::max(hi, tp);
+            }
+            if (hi - lo < kRampSpread) continue;
+        }
         ++out.beaches;
 
         // Cada pixel vai para o lado de sua própria cor: t < ½ → A, senão B.
@@ -281,33 +329,50 @@ SubPixelSegmenter::BeachResult SubPixelSegmenter::splitAndMergeBeaches(PixelMap&
             sides[k] = sla::dot(c - ca, v) / vv < 0.5 ? A : B;
         }
         done.assign(pixels.size(), 0);
-        for (int sweep = 0; sweep < 8; ++sweep) {
-            bool progress = false;
-            for (std::size_t k = 0; k < pixels.size(); ++k) {
-                if (done[k]) continue;
-                const auto [x, y] = pixels[k];
-                const RegionId target = sides[k];
-                bool adjacent = false;
-                for (std::size_t d = 0; d < 4 && !adjacent; ++d) {
-                    const int qx = x + kDx4[d];
-                    const int qy = y + kDy4[d];
-                    adjacent = qx >= 0 && qy >= 0 && qx < w && qy < h && map.regionAt(qx, qy) == target;
+        // Varreduras de fora para dentro: um pixel só muda de dono quando já toca o destino. O pixel de transição é mistura
+        // das duas tintas; depois de entregue, sai das amostras de cor do destino, senão a mediana dele desliza para o meio
+        // do degradê e a borda ganha uma franja da cor errada (mesma regra do absorvedor de rampas).
+        const auto settle = [&](bool otherSide) {
+            for (int sweep = 0; sweep < 8; ++sweep) {
+                bool progress = false;
+                for (std::size_t k = 0; k < pixels.size(); ++k) {
+                    if (done[k]) continue;
+                    const auto [x, y] = pixels[k];
+                    const RegionId target = otherSide ? (sides[k] == A ? B : A) : sides[k];
+                    bool adjacent = false;
+                    for (std::size_t d = 0; d < 4 && !adjacent; ++d) {
+                        const int qx = x + kDx4[d];
+                        const int qy = y + kDy4[d];
+                        adjacent = qx >= 0 && qy >= 0 && qx < w && qy < h && map.regionAt(qx, qy) == target;
+                    }
+                    if (!adjacent) continue;
+                    if (map.tryMovePixel(x, y, target, image_(x, y))) {
+                        map.excludeFromColorStats(x, y, image_(x, y));
+                        done[k] = 1;
+                        ++out.moved;
+                        progress = true;
+                    }
                 }
-                if (!adjacent) continue;
-                if (map.tryMovePixel(x, y, target, image_(x, y))) {
-                    done[k] = 1;
-                    ++out.moved;
-                    progress = true;
-                }
+                if (!progress) break;
             }
-            if (!progress) break;
-        }
+        };
+        settle(false);
+        settle(true);  // quem não alcançou o próprio lado (pixel isolado do lado de lá) vai para o outro, pixel a pixel
         cc.invalidate(r);
         cc.invalidate(A);
         cc.invalidate(B);
         if (forest.pixelCount(r) > 0) {  // resto que a proteção topológica não deixou mover: funde inteiro
-            const RegionId side = sla::dot(cc.get(r) - ca, v) / vv < 0.5 ? A : B;
-            cc.invalidate(forest.unite(r, side));
+            RegionId side = sla::dot(cc.get(r) - ca, v) / vv < 0.5 ? A : B;
+            // Só se funde a uma região que o resto toca: um pixel de praia escuro que só encosta no lado claro não pode
+            // ser entregue ao escuro (a união de regiões não adjacentes deixaria o escuro em dois pedaços).
+            bool touches = false;
+            for (const RegionId n : forest.neighbors(r)) touches = touches || forest.find(n) == forest.find(side);
+            if (!touches) side = side == A ? B : A;
+            const RegionId root = forest.unite(r, side);
+            for (std::size_t k = 0; k < pixels.size(); ++k) {
+                if (!done[k]) map.excludeFromColorStats(pixels[k].first, pixels[k].second, image_(pixels[k].first, pixels[k].second));
+            }
+            cc.invalidate(root);
             ++out.merged;
         }
     }

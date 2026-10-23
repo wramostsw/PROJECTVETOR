@@ -162,6 +162,12 @@ SmoothResult ContourSmoother::run(VectorImage& image, TaskContext ctx) const {
         st.status = CgStatus::MaxIterations;
 
         std::vector<double> before;
+        // A tolerância relativa de energia é medida sobre a energia total, dominada pela mola de fidelidade: numa escada de
+        // 1 px o passo conjugado pode cair abaixo dela muito antes de o termo angular ter alisado o degrau (a direção
+        // Polak–Ribière+ degenera para ~0 depois de uma rejeição do fiscal ou de um recomeço). Uma convergência declarada é
+        // confirmada por UM recomeço com descida pelo gradiente puro antes de encerrar a fase; só vale se esse recomeço
+        // também declarar convergência. O ponto aceito nunca piora: o CG parte do ponto atual.
+        bool confirmed = false;
         for (int it = 0; it < params_.maxCgIterations; ++it) {
             ctx.checkpoint((static_cast<double>(phase) + static_cast<double>(it) / static_cast<double>(params_.maxCgIterations)) / nPhases);
             before.assign(cg.x().begin(), cg.x().end());
@@ -192,9 +198,15 @@ SmoothResult ContourSmoother::run(VectorImage& image, TaskContext ctx) const {
             image.tickQuarantine();
             if (image.collectFreeNodes() != objective.freeNodes()) rebuild();  // alguém saiu da quarentena
             if (offenders.empty() && s != CgStatus::Running) {
+                if (!confirmed && s != CgStatus::MaxIterations) {
+                    confirmed = true;
+                    rebuild();  // zera a memória da direção conjugada no ponto aceito
+                    continue;
+                }
                 st.status = s;
                 break;
             }
+            if (offenders.empty() && s == CgStatus::Running) confirmed = false;  // voltou a descer: a próxima parada se confirma de novo
         }
         evaluations += cg.evaluations();
         st.evaluations = evaluations;

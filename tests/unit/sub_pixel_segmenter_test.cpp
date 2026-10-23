@@ -283,6 +283,91 @@ CNX_TEST(regions_that_are_not_beaches_are_left_alone) {
               {{'a', gray(100)}, {'b', gray(101)}, {'c', gray(102)}}, "contraste baixo");
 }
 
+// ================================================================ rampa de 3 px e franja de cor (docs §1.31)
+
+CNX_TEST(a_three_pixel_ramp_is_a_beach_but_a_flat_three_pixel_band_is_not) {
+    // Rampa 20 % / 52 % / 80 % de preto entre o branco e o preto: três colunas, a do meio tem pixels interiores.
+    const std::vector<std::string> labels(6, "AAAbbbBBB");
+    Picture ramp = picture(labels, std::vector<std::string>(6, "wwwlmrkkk"),
+                           {{'w', kWhite}, {'k', kBlack}, {'l', gray(204)}, {'m', gray(122)}, {'r', gray(51)}});
+    const SubPixelSegmenter seg(ramp.image, SegmentParams{}, blackAndWhite());
+    const auto result = seg.splitAndMergeBeaches(ramp.map);
+    CHECK(result.beaches == 1);
+    const RegionId white = ramp.map.regionAt(0, 0);
+    const RegionId black = ramp.map.regionAt(8, 0);
+    for (int y = 0; y < 6; ++y) {
+        CHECK_CTX(ramp.map.regionAt(3, y) == white, "coluna 20 % preta → branco, linha " + std::to_string(y));
+        CHECK_CTX(ramp.map.regionAt(4, y) == black, "coluna 52 % preta → preto, linha " + std::to_string(y));
+        CHECK_CTX(ramp.map.regionAt(5, y) == black, "coluna 80 % preta → preto, linha " + std::to_string(y));
+    }
+    CHECK(ramp.map.forest().rootCount() == 2);
+    CHECK(allRegionsConnected(ramp.map));
+
+    // O mesmo desenho com a faixa de um cinza só é uma tira do desenho, não uma transição.
+    Picture flat = picture(labels, std::vector<std::string>(6, "wwwgggkkk"), {{'w', kWhite}, {'k', kBlack}, {'g', gray(128)}});
+    const auto none = SubPixelSegmenter(flat.image, SegmentParams{}, blackAndWhite()).splitAndMergeBeaches(flat.map);
+    CHECK(none.beaches == 0 && none.moved == 0);
+    CHECK(flat.map.forest().rootCount() == 3);
+
+    // E uma faixa de 5 px, mesmo com tons variando, é larga demais para ser praia (tem núcleo de profundidade 3).
+    const std::vector<std::string> wide(7, "AAAbbbbbBBB");
+    Picture five = picture(wide, std::vector<std::string>(7, "wwwlmgrkkkk"),
+                           {{'w', kWhite}, {'k', kBlack}, {'l', gray(204)}, {'m', gray(160)}, {'g', gray(122)}, {'r', gray(51)}});
+    const auto none5 = SubPixelSegmenter(five.image, SegmentParams{}, blackAndWhite()).splitAndMergeBeaches(five.map);
+    CHECK(none5.beaches == 0);
+}
+
+CNX_TEST(a_beach_pixel_that_cannot_reach_its_own_side_goes_to_the_other_one_pixel_by_pixel) {
+    // Coluna de praia clara (20 % preta) em x = 3 e um braço de dois pixels escuros (84 %) que entra à esquerda, em
+    // (1, 2) e (2, 2). O lado do braço é o preto, mas ele só toca o branco; o preto fica a duas colunas de distância.
+    //  - (2, 2) vai para o branco, pixel a pixel (a passada do outro lado);
+    //  - (1, 2) é o último pixel da praia (uma região não fica vazia) e é fundido inteiro, mas ao branco, que ele toca:
+    //    fundir ao preto (pela cor dele) deixaria o preto em dois pedaços.
+    std::vector<std::string> labels(5, "AAAbBBBB");
+    labels[2] = "AbbbBBBB";
+    std::vector<std::string> colors(5, "wwwlkkkk");
+    colors[2] = "wddlkkkk";
+    Picture p = picture(labels, colors, {{'w', kWhite}, {'k', kBlack}, {'l', gray(204)}, {'d', gray(40)}});
+    const SubPixelSegmenter seg(p.image, SegmentParams{}, blackAndWhite());
+    const auto result = seg.splitAndMergeBeaches(p.map);
+    CHECK(result.beaches == 1);
+    CHECK(result.moved == 6 && result.merged == 1);  // a coluna (5) e (2, 2); (1, 2) é o resto fundido
+    const RegionId white = p.map.regionAt(0, 0);
+    CHECK(p.map.regionAt(1, 2) == white && p.map.regionAt(2, 2) == white);
+    for (int y = 0; y < 5; ++y) CHECK(p.map.regionAt(3, y) == white);
+    CHECK(p.map.forest().rootCount() == 2);
+    CHECK(allRegionsConnected(p.map));
+}
+
+CNX_TEST(beach_pixels_do_not_pull_the_color_of_the_region_that_receives_them) {
+    // Só uma coluna branca (5 px) e três de preto; a rampa vai quase toda para o lado preto e o resto para o branco. Os
+    // pixels de transição não podem entrar nas amostras de cor: a coluna branca continuaria branca (com eles, a mediana
+    // de 5 brancos + 5 cinzas claros desliza).
+    const std::vector<std::string> labels(5, "AbbbBBB");
+    Picture p = picture(labels, std::vector<std::string>(5, "wlmrkkk"),
+                        {{'w', kWhite}, {'k', kBlack}, {'l', gray(204)}, {'m', gray(122)}, {'r', gray(51)}});
+    const SubPixelSegmenter seg(p.image, SegmentParams{}, blackAndWhite());
+    const auto result = seg.splitAndMergeBeaches(p.map);
+    CHECK(result.beaches == 1);
+    const RegionId white = p.map.regionAt(0, 0);
+    CHECK(p.map.regionAt(1, 0) == white);  // a coluna 20 % preta foi para o branco...
+    const cnx::RegionStats& st = p.map.forest().stats(white);
+    CHECK(st.samples.count() == 5);        // ...mas só os 5 pixels brancos contam para a cor
+    CHECK(sla::toRgba(st.samples.median()).r > 0.99f);
+}
+
+CNX_TEST(micro_regions_absorbed_keep_their_color_out_of_the_neighbours_statistics) {
+    // Região branca de 16 px com uma ilha de 2 px cinza dentro: a ilha vai para o branco e não muda a cor do branco.
+    const std::vector<std::string> labels{"AAAAAA", "AAxxAA", "AAAAAA"};
+    Picture p = picture(labels, {"wwwwww", "wwggww", "wwwwww"}, {{'w', kWhite}, {'g', gray(100)}});
+    const SubPixelSegmenter seg(p.image, SegmentParams{}, blackAndWhite());
+    CHECK(seg.mergeMicroRegions(p.map) == 1);
+    CHECK(p.map.forest().rootCount() == 1);
+    const RegionId r = p.map.regionAt(0, 0);
+    CHECK(p.map.forest().pixelCount(r) == 18);
+    CHECK(p.map.forest().stats(r).samples.count() == 16);  // os 2 pixels da ilha saíram das amostras
+}
+
 // ================================================================ sombras
 
 namespace {

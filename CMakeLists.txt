@@ -40,6 +40,7 @@ add_library(cnx_core
   src/vector/Optimizer.cpp
   src/vector/CrossingGuard.cpp
   src/vector/ContourSmoother.cpp
+  src/vector/EdgeAnchors.cpp
   src/sla/BezierCurve.cpp
   src/fit/BezierFitter.cpp
   src/io/Inflate.cpp
@@ -60,7 +61,7 @@ foreach(test_name header_smoke_test pixel_map_test pixel_segmenter_test vector_i
                  sub_pixel_segmenter_test palette_test weights_finder_test
                  parameters_test preprocess_classify_test core_engine_test parameter_filer_test edge_classifier_test
                  flow_field_test signal_image_test image_decoder_test svg_export_test contour_quality_test
-                 gradient_segmentation_test contrast_smoothing_test ramp_absorption_test)
+                 gradient_segmentation_test contrast_smoothing_test ramp_absorption_test edge_anchors_test)
   add_executable(${test_name} tests/unit/${test_name}.cpp)
   target_link_libraries(${test_name} PRIVATE cnx_core)
   add_test(NAME ${test_name} COMMAND ${test_name})

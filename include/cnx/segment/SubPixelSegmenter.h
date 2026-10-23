@@ -4,7 +4,9 @@
 //   1. micro-regiões: limpa regiões de 1 px, depois de 2 px, … (cada uma vai para a vizinha de cor
 //      mais próxima; a ordem crescente de tamanho importa);
 //   2. praias (splitAndMergeBeaches): faixas finas de pixels de transição entre duas cores dominantes
-//      são repartidas entre as duas, pixel a pixel, para a fronteira cair no meio da transição;
+//      (rampas de até 3 px, sem núcleo de profundidade 3) são repartidas entre as duas, pixel a pixel, para a
+//      fronteira cair no meio da transição; os pixels entregues, e os das micro-regiões absorvidas, saem das
+//      amostras de cor do destino para não deixar franja de cor na mediana;
 //   3. sombras (flagShadowSegments + rebuild): regiões de gradiente suave (sombra ou desfoque) são
 //      marcadas (pelos pixels interiores) e reconstruídas em faixas pela cor da imagem DESFOCADA dentro da
 //      região, escolhida entre as tintas das regiões vizinhas (nunca uma terceira tinta; docs §1.26);

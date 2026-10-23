@@ -57,6 +57,7 @@ Fingerprint SmoothParams::fingerprint(Fingerprint upstream) const {
     f.add(borderAnchorWeight).add(static_cast<int>(borderHardConstraint)).add(fidelityFreeRadiusPx).add(quarantineRounds).add(minSegmentPx);
     f.add(punctureCornerThresh).add(punctureFlatnessThresh).add(punctureArmPx).add(punctureOnPhase);
     f.add(punctureMinContrast).add(contrastFullLevels).add(contrastFloor);
+    f.add(static_cast<int>(subPixelAnchors)).add(anchorReachPx).add(anchorMaxShiftPx).add(anchorMinContrast);
     f.add(maxCgIterations).add(maxNodeStepPx).add(gradientTolerance).add(energyTolerance);
     return f.add(upstream);
 }
@@ -122,6 +123,7 @@ void EngineParameters::applyProfile(ImageProfile profile) {
     if (snapOnlyNearInks) {
         segment.paletteSnapMax = segment.mergeThreshMax / 9.0;
         segment.absorbRamps = true;  // as rampas de antialiasing não viram faixas de 1 px (§1.30)
+        smooth.subPixelAnchors = true;  // a borda cai onde a cobertura dos pixels de transição a põe (§1.31)
     }
 }
 

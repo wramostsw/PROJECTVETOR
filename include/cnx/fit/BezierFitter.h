@@ -7,7 +7,8 @@
 //      t por comprimento de corda, refinados por Newton exato em (p, t) com complemento de Schur
 //      e amortecimento de Levenberg–Marquardt (custo O(m) por iteração);
 //   3. fusão iterativa de vizinhos: funde se ΔE = E*(A∪B) − E*(A) − E*(B) < τ_r, com τ_r crescendo
-//      de statThreshInitial a statThreshFinal em maxRounds rodadas; quando recusa, desloca a quebra
+//      de statThreshInitial a statThreshFinal (o teto, atingido exatamente na última rodada; as duas últimas
+//      rodadas repetem a varredura até o ponto fixo) em maxRounds rodadas; quando recusa, desloca a quebra
 //      em {−1, 0, +1} nó e fica com o menor E*(A) + E*(B);
 //   4. nas quebras lisas a tangente é compartilhada (G¹): P₁ = P₀ + α·τ₀, P₂ = P₃ − β·τ₃.
 // Fragmentos de ≤ 3 pontos viram retas (SegmentKind::Line).

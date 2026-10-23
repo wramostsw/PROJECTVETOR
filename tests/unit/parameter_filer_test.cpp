@@ -300,6 +300,10 @@ CNX_TEST(every_field_has_exactly_one_line_and_changing_it_changes_only_that_line
         {"ContourSmoother::puncture_min_contrast", [](auto& p) { p.smooth.punctureMinContrast = 11.0; }},
         {"ContourSmoother::contrast_full_levels", [](auto& p) { p.smooth.contrastFullLevels = 33.0; }},
         {"ContourSmoother::contrast_floor", [](auto& p) { p.smooth.contrastFloor = 0.5; }},
+        {"ContourSmoother::sub_pixel_anchors", [](auto& p) { p.smooth.subPixelAnchors = !p.smooth.subPixelAnchors; }},
+        {"ContourSmoother::anchor_reach_px", [](auto& p) { p.smooth.anchorReachPx = 3.5; }},
+        {"ContourSmoother::anchor_max_shift_px", [](auto& p) { p.smooth.anchorMaxShiftPx = 0.75; }},
+        {"ContourSmoother::anchor_min_contrast", [](auto& p) { p.smooth.anchorMinContrast = 30.0; }},
         {"ContourSmoother::puncture_on_phase", [](auto& p) { p.smooth.punctureOnPhase = 2; }},
         {"ContourSmoother::max_cg_iterations", [](auto& p) { p.smooth.maxCgIterations = 77; }},
         {"ContourSmoother::max_node_step_px", [](auto& p) { p.smooth.maxNodeStepPx = 0.25; }},
@@ -319,7 +323,7 @@ CNX_TEST(every_field_has_exactly_one_line_and_changing_it_changes_only_that_line
     for (const std::string& l : baseLines) {
         if (!l.empty() && l[0] != '#') entries.push_back(l);
     }
-    // 59 campos no total; ContourSmoother::prior_type só tem o valor 3 válido e é conferido à parte.
+    // 63 campos no total; ContourSmoother::prior_type só tem o valor 3 válido e é conferido à parte.
     CHECK(entries.size() == muts.size() + 1);
     CHECK(std::count(entries.begin(), entries.end(), std::string("ContourSmoother::prior_type 3")) == 1);
 
