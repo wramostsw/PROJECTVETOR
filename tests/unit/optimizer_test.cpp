@@ -242,6 +242,47 @@ CNX_TEST(argument_validation) {
     CHECK_THROWS(std::invalid_argument, ConjugateGradient(f, c2));
     ConjugateGradient fresh(f, CgOptions{});
     CHECK_THROWS(std::logic_error, (void)fresh.iterate());
+    for (const double ratio : {0.0, -0.2, std::numeric_limits<double>::quiet_NaN()}) {
+        CgOptions r;
+        r.restartRatio = ratio;
+        CHECK_THROWS(std::invalid_argument, ConjugateGradient(f, r));
+    }
+}
+
+CNX_TEST(restart_ratio_sets_how_long_the_conjugate_direction_survives) {
+    // Reinício de Powell: |g_k·g_{k+1}| ≥ ratio·‖g_{k+1}‖² descarta a memória (β = 0). Com ratio ínfimo toda iteração reinicia e
+    // o CG vira descida pelo gradiente; com o valor clássico 0,2 ele segue conjugado e converge na Rosenbrock.
+    const auto run = [](double ratio, int* zeroBetas) {
+        FnObjective f = rosenbrock();
+        CgOptions o;
+        o.stride = 1;
+        o.gradientTol = 1e-6;
+        o.maxIterations = 300;
+        o.restartRatio = ratio;
+        ConjugateGradient cg(f, o);
+        cg.reset(std::vector<double>{-1.2, 1.0});
+        CgStatus s = CgStatus::Running;
+        int zero = 0;
+        while (s == CgStatus::Running) {
+            s = cg.iterate();
+            if (cg.lastBeta() == 0.0) ++zero;
+        }
+        *zeroBetas = zero;
+        return std::pair{s, cg.iterations()};
+    };
+    int zeroTiny = 0;
+    int zeroClassic = 0;
+    int zeroNever = 0;
+    const auto tiny = run(1e-12, &zeroTiny);
+    const auto classic = run(0.2, &zeroClassic);
+    const auto never = run(1e12, &zeroNever);
+    std::printf("  Rosenbrock: reinício sempre %d it (β=0 em %d), 0,2: %d it (β=0 em %d), nunca: %d it (β=0 em %d)\n", tiny.second,
+                zeroTiny, classic.second, zeroClassic, never.second, zeroNever);
+    CHECK(zeroTiny == tiny.second);  // toda iteração reiniciou
+    CHECK(tiny.first == CgStatus::MaxIterations);  // a descida pelo gradiente não chega ao vale em 300 iterações
+    CHECK(classic.first == CgStatus::ConvergedGradient || classic.first == CgStatus::ConvergedEnergy);
+    CHECK(zeroClassic < classic.second);  // reinicia às vezes, mas não sempre
+    CHECK(zeroNever <= zeroClassic);      // sem o critério só restam os reinícios por direção que não desce
 }
 
 CNX_TEST(reset_can_change_the_dimension_and_is_deterministic) {

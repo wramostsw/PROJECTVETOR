@@ -1478,6 +1478,46 @@ No olho, nos pontos onde o filtro age (a haste do "r", o canto do "A", três pon
 - O canto arredondado de raio ~4 px do "A" sai como um chanfro de dois cantos de 45°, não como um arco.
 - O limite de 2,5 px é de duas imagens: precisa de mais logos.
 
+### 1.33 A mola angular tem tensão; o que faltava era orçamento do CG (e isso não melhora o erro de pixel)
+
+**A hipótese e o que se mediu.** A suspeita era que o peso da suavidade angular (`prior_strengths` = 10) não chegava à energia, ou que a derivada puxava pouco para desdobrar a escadinha. Nenhuma das duas se confirma:
+
+- **Propagação do peso.** `SmoothParams::priorStrength` → `phaseWeights().angular` → `angularEnergy(weight)` → `weight · Σ θ²` e `grad = weight · 2θ · ∂θ/∂P`. Nenhum perfil o sobrescreve (só `Smoothing`, que multiplica por 1 no valor 50). Em `energy_terms_test` a derivada analítica é conferida contra diferenças finitas centradas, termo a termo e no total.
+- **A escadinha é desdobrada.** `bench/tension.cpp` (nós de uma aresta, giros consecutivos de sinais opostos acima de 0,15 rad = zigue-zague; uma curva suave vira sempre para o mesmo lado): no Acrolimp **83,2%** dos pares eram zigue-zague na entrada e **2,6%** na saída; no Copilot 7,1% na saída. Num disco sintético 44 de 48 pares caem para 0 com peso 10 e ficam 44 com peso 0 (teste novo).
+- **O peso não é o limitador.** Varredura do peso angular (erro por classe de contraste, `errmap`): Acrolimp borda forte 56,69 / 57,05 / 57,50 / 57,55 para pesos 5 / 10 / 20 / 40; Copilot borda forte 33,96 / 33,29 / 32,88 / 32,89. Mais peso não ajuda de forma consistente e o zigue-zague residual nem cai de forma monótona (513 / 472 / 650 / 501 no Acrolimp), o que aponta para falta de convergência, não de força.
+
+**O defeito real: o orçamento do CG era gasto em passos desfeitos.** As três fases terminavam em `MaxIterations` (200 laços) com a energia ainda caindo, e **63% dos laços** (84, 130 e 166 de 200 em cada fase) eram passos que o fiscal anti-cruzamento desfazia por inteiro, com quarentena dos infratores e recomeço do CG pela descida do gradiente. Triplicar o orçamento (600 iterações) baixa a energia final só 6,5% e custa 3,4× o tempo. Além disso, o reinício de Powell `|g_k·g_{k+1}| ≥ 0,2‖g_{k+1}‖²` reinicia o CG com tanta frequência neste problema mal condicionado (25 mil nós, rigidez angular 10) que ele se comporta quase como descida pelo gradiente.
+
+**O que foi feito** (os dois são parâmetros; **os padrões não mudam**, pelo resultado abaixo):
+
+1. `SmoothParams::holdRounds` (0 desliga; `.apf`: `ContourSmoother::hold_rounds`). Num passo com cruzamento, só os nós infratores voltam à posição anterior e vão para a quarentena; os outros 25 mil ficam com o passo do CG. Se a retenção cria outro cruzamento, repete até `holdRounds` rodadas. O passo parcial só vale sem cruzamentos **e** com energia abaixo da de partida (a queda do passo cheio não se transfere ao parcial); senão cai no caminho antigo. Um primeiro desenho, encurtar o passo inteiro pela metade, quase não salvava nada (2 a 3 de ~130 passos) e custou 60% de tempo: os cruzamentos persistem com 1/8 do passo, são locais.
+2. `SmoothParams::cgRestartRatio` / `CgOptions::restartRatio` (0,2 = o valor de Powell; `.apf`: `ContourSmoother::cg_restart_ratio`; deve ser > 0).
+
+**Medidas** (Acrolimp, perfil automático, 200 laços por fase; `bench/tension.cpp` e `errmap`):
+
+| configuração | energia angular fase 3 | zigue-zague | tempo (SmoothContours) | borda forte | médio |
+|---|---|---|---|---|---|
+| padrão (hold 0, razão 0,2) | 37 811 | 472 (2,6%) | 15 s | 57,05 | 43,88 |
+| hold 3, razão 0,2 | 33 767 | 338 (1,8%) | 21 s | 56,90 | 43,70 |
+| hold 3, razão 0,5 | **29 067** | **199 (1,1%)** | 34 s | 57,12 | 43,53 |
+| hold 0, razão 0,5 | 38 870 | 501 | 15 s | 57,28 | 43,92 |
+
+| Copilot | energia angular | zigue-zague | plano | suave | médio | borda forte |
+|---|---|---|---|---|---|---|
+| padrão | 6 186 | 327 (7,1%) | 3,42 | 7,77 | 16,86 | 33,29 |
+| hold 3, razão 0,5 | **4 304** | **243 (5,3%)** | 3,52 | 7,74 | 16,96 | **34,35** |
+| hold 0, razão 0,5 | 6 127 | 320 | 3,42 | 7,63 | 16,83 | 33,22 |
+
+**O que isso diz, sem enfeite.** A combinação retenção + razão 0,5 faz o que se pediu na geometria: energia angular **−23% (Acrolimp) e −30% (Copilot)**, zigue-zague residual **−58% e −26%**, e o CG deixa de gastar o orçamento em passos desfeitos (0 rejeições contra 63% dos laços). Mas **o erro de pixel não melhora**: Acrolimp fica igual (57,05 → 57,12 na borda forte) e o Copilot **piora 3,2%** (33,29 → 34,35) e 3% no plano, a um custo de +18% (Copilot) a +120% (Acrolimp) de tempo. O motivo é o objetivo, não o otimizador: a mola de fidelidade está ancorada na escadinha (e nas âncoras sub-pixel do §1.31), então minimizar melhor essa energia afasta os nós das âncoras (a energia da mola sobe de 3 974 para 4 719 no Copilot) sem aproximá-los da imagem. A energia deixa de medir o erro quando já está bem minimizada. Por isso os padrões ficam em 0 e 0,2; quem quiser contornos mais esticados (e aceitar o erro e o tempo) liga os dois com `--set ContourSmoother::hold_rounds 3 --set ContourSmoother::cg_restart_ratio 0.5`.
+
+**Testes** (suíte de 31, três novos e dois estendidos): `the_angular_weight_reaches_the_energy_and_unfolds_the_staircase` (peso 0 deixa o zigue-zague, peso 10 o zera, energia angular 0 contra > 0); `hold_rounds_keep_the_cg_step_of_nodes_that_do_not_cross` (barras do fiscal: sem retenção 7 rejeições e 0 retidas, com retenção 1 rejeição e 4 retidas; invariantes, energia monótona); `restart_ratio_sets_how_long_the_conjugate_direction_survives` (Rosenbrock: razão ínfima reinicia em todas as 300 iterações e não converge; 0,2 converge em 32 com 14 reinícios; sem critério converge em 20); validação do otimizador, do suavizador e do `.apf`; os 66 campos do arquivo de parâmetros.
+
+**Mutação:** 20 defeitos injetados (`mutation_hold.ps1`: padrões, restauração dos infratores, conferência de energia, quarentena dos retidos, status, rodadas, repasse e uso da razão, contagem, impressão digital, validações, `.apf`), **16 detectados e 4 não**. Na primeira rodada sobreviveram 11; testes de impressão digital, de `.apf`, do repasse da razão ao otimizador e das contagens exatas da cena das barras (retidas 1/2/1, rejeições 1/0/0, iterações 6/6/3, energias finais) pegaram 7. Os 4 que restam: H20 (tirar o `rebuild()` explícito depois do passo parcial) é **equivalente**, porque os retidos vão para a quarentena e a lista de nós livres mudada já dispara o `rebuild()` na linha seguinte; H6 (tirar a parada quando os infratores já estão parados) só poupa trabalho, o resultado é o mesmo; H5 (o status do passo cheio valer no ponto parcial) e H7 (uma rodada de retenção em vez de até `holdRounds`) são guardas reais **não exercitadas**: procurei em 300 cenas aleatórias (pesos 10 e 40, passo de 3 px) uma em que a retenção precisasse de uma segunda rodada ou de o CG declarar convergência no passo que cruza, e não achei nenhuma. Ficam sem cobertura, e só afetam quem liga `hold_rounds`.
+
+**O que continua aberto:**
+- A função de energia, não o otimizador, é o limite: uma mola ancorada na escadinha não mede o erro de imagem. Medir o erro por pixel dentro do CG é o que a medição generativa (perfis de logo com AA) faz, e é a fase lenta (o motivo de os perfis de foto usarem a mola).
+- Os 2,6% de zigue-zague residual do Acrolimp (472 pares) não foram localizados um a um; com a retenção ligada caem a 1,1%, o que indica que boa parte é nó em quarentena ou perto de cantos.
+
 ---
 
 ## 2. Formulação matemática

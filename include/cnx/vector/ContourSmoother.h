@@ -28,6 +28,7 @@ struct PhaseStats {
     int iterations = 0;       ///< iterações aceitas do CG
     int evaluations = 0;      ///< avaliações de energia (inclui a busca em linha)
     int crossingRejects = 0;  ///< iterações desfeitas pelo fiscal
+    int held = 0;             ///< iterações salvas pela retenção dos infratores (passo parcial aceito; docs §1.33)
     int puncturedNodes = 0;   ///< cantos perfurados nesta fase
     int jogNodes = 0;         ///< candidatos a canto descartados por formarem um degrau de bloco (par de giros opostos, § 1.32)
     int freeNodes = 0;        ///< nós livres no início da fase

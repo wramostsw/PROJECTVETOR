@@ -73,6 +73,8 @@ ContourSmoother::ContourSmoother(SmoothParams params, const GenerativeModel* mod
     if (params_.maxCgIterations < 0) throw std::invalid_argument("ContourSmoother: maxCgIterations < 0");
     if (!(params_.maxNodeStepPx > 0.0)) throw std::invalid_argument("ContourSmoother: maxNodeStepPx <= 0");
     if (params_.quarantineRounds < 0) throw std::invalid_argument("ContourSmoother: quarantineRounds < 0");
+    if (!(params_.cgRestartRatio > 0.0)) throw std::invalid_argument("ContourSmoother: cgRestartRatio <= 0");
+    if (params_.holdRounds < 0 || params_.holdRounds > 16) throw std::invalid_argument("ContourSmoother: holdRounds fora de [0, 16]");
     if (!(params_.punctureMinContrast >= 0.0)) throw std::invalid_argument("ContourSmoother: punctureMinContrast negativo ou NaN");
     if (!(params_.contrastFullLevels >= 0.0)) throw std::invalid_argument("ContourSmoother: contrastFullLevels negativo ou NaN");
     if (!(params_.jogMaxLedgePx >= 0.0)) throw std::invalid_argument("ContourSmoother: jogMaxLedgePx negativo ou NaN");
@@ -206,6 +208,7 @@ SmoothResult ContourSmoother::run(VectorImage& image, TaskContext ctx) const {
         options.gradientTol = params_.gradientTolerance;
         options.relEnergyTol = params_.energyTolerance;
         options.maxStep = params_.maxNodeStepPx;
+        options.restartRatio = params_.cgRestartRatio;
         options.stride = 2;
         ConjugateGradient cg(objective, options);
 
@@ -233,6 +236,7 @@ SmoothResult ContourSmoother::run(VectorImage& image, TaskContext ctx) const {
         for (int it = 0; it < params_.maxCgIterations; ++it) {
             ctx.checkpoint((static_cast<double>(phase) + static_cast<double>(it) / static_cast<double>(params_.maxCgIterations)) / nPhases);
             before.assign(cg.x().begin(), cg.x().end());
+            const double energyBefore = cg.value();
             const CgStatus s = cg.iterate();
             if (s == CgStatus::LineSearchFailed) {
                 image.scatter(objective.freeNodes(), before);
@@ -245,6 +249,47 @@ SmoothResult ContourSmoother::run(VectorImage& image, TaskContext ctx) const {
             std::vector<NodeId> offenders = CrossingGuard::offendingNodes(crossings);
             const std::vector<NodeId> collapsed = CrossingGuard::shortSegmentNodes(image, params_.minSegmentPx);
             offenders.insert(offenders.end(), collapsed.begin(), collapsed.end());
+            CgStatus status = s;
+            if (!offenders.empty() && params_.holdRounds > 0) {
+                // Retenção dos infratores: em vez de descartar o passo dos 25 mil nós por causa de uns poucos que se cruzam, só
+                // os infratores voltam à posição anterior (e vão para a quarentena); os outros ficam com o passo do CG. Se a
+                // retenção cria novo cruzamento, repete-se até `holdRounds` vezes. O ponto só vale sem cruzamentos e com a
+                // energia abaixo da de partida (a queda do passo cheio não se transfere ao passo parcial).
+                const std::vector<double> full(cg.x().begin(), cg.x().end());
+                std::vector<double> trial = full;
+                std::vector<int> slot(image.nodeCount(), -1);
+                for (std::size_t i = 0; i < objective.freeNodes().size(); ++i) slot[static_cast<std::size_t>(objective.freeNodes()[i])] = static_cast<int>(i);
+                std::vector<NodeId> held;
+                std::vector<NodeId> bad = offenders;
+                bool resolved = false;
+                for (int k = 0; k < params_.holdRounds && !resolved; ++k) {
+                    bool moved = false;
+                    for (const NodeId n : bad) {
+                        const int i = slot[static_cast<std::size_t>(n)];
+                        if (i < 0) continue;
+                        const auto c = static_cast<std::size_t>(2 * i);
+                        if (trial[c] != before[c] || trial[c + 1] != before[c + 1]) moved = true;
+                        trial[c] = before[c];
+                        trial[c + 1] = before[c + 1];
+                        held.push_back(n);
+                    }
+                    if (!moved) break;  // os infratores já estavam parados: reter mais não resolve
+                    image.scatter(objective.freeNodes(), trial);
+                    bad = CrossingGuard::offendingNodes(CrossingGuard::find(image));
+                    const std::vector<NodeId> shorts = CrossingGuard::shortSegmentNodes(image, params_.minSegmentPx);
+                    bad.insert(bad.end(), shorts.begin(), shorts.end());
+                    resolved = bad.empty();
+                }
+                if (resolved && objective.current(nullptr) < energyBefore) {
+                    offenders.clear();
+                    ++st.held;
+                    status = CgStatus::Running;  // a parada do passo cheio não vale no ponto parcial
+                    for (const NodeId n : held) {
+                        image.quarantine(n, static_cast<std::uint8_t>(std::min(255, params_.quarantineRounds + 1)));
+                    }
+                    rebuild();  // o CG recomeça aqui: a memória da direção conjugada não vale mais
+                }
+            }
             if (!offenders.empty()) {
                 // Desfaz a iteração, congela os nós envolvidos e recomeça o CG do ponto anterior.
                 image.scatter(objective.freeNodes(), before);
@@ -259,16 +304,16 @@ SmoothResult ContourSmoother::run(VectorImage& image, TaskContext ctx) const {
 
             image.tickQuarantine();
             if (image.collectFreeNodes() != objective.freeNodes()) rebuild();  // alguém saiu da quarentena
-            if (offenders.empty() && s != CgStatus::Running) {
-                if (!confirmed && s != CgStatus::MaxIterations) {
+            if (offenders.empty() && status != CgStatus::Running) {
+                if (!confirmed && status != CgStatus::MaxIterations) {
                     confirmed = true;
                     rebuild();  // zera a memória da direção conjugada no ponto aceito
                     continue;
                 }
-                st.status = s;
+                st.status = status;
                 break;
             }
-            if (offenders.empty() && s == CgStatus::Running) confirmed = false;  // voltou a descer: a próxima parada se confirma de novo
+            if (offenders.empty() && status == CgStatus::Running) confirmed = false;  // voltou a descer: a próxima parada se confirma de novo
         }
         evaluations += cg.evaluations();
         st.evaluations = evaluations;

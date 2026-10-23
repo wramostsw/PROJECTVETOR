@@ -6,6 +6,7 @@
 #include <cmath>
 #include <cstdio>
 #include <numbers>
+#include <sstream>
 #include <stop_token>
 #include <string>
 #include <vector>
@@ -384,6 +385,157 @@ CNX_TEST(crossing_guard_rolls_back_steps_that_would_cross_and_quarantines_the_no
     checkInvariants(before, s.image, "barras");
 }
 
+// ================================================================ tensão da mola angular e retenção de infratores (docs §1.33)
+
+namespace {
+
+/// Pares de giros consecutivos de sinais opostos, ambos acima de 0,15 rad, no anel fechado `ring`: o zigue-zague da
+/// escadinha (uma curva suave vira sempre para o mesmo lado). Devolve {zigue-zagues, pares}.
+std::pair<int, int> zigzag(const VectorImage& v, const std::vector<NodeId>& ring) {
+    const std::size_t n = ring.size();
+    const auto turn = [&](std::size_t i) {
+        const Vec2 a = v.position(ring[i]) - v.position(ring[(i + n - 1) % n]);
+        const Vec2 b = v.position(ring[(i + 1) % n]) - v.position(ring[i]);
+        return std::atan2(sla::cross(a, b), sla::dot(a, b));
+    };
+    int zig = 0;
+    for (std::size_t i = 0; i < n; ++i) {
+        const double t0 = turn(i);
+        const double t1 = turn((i + 1) % n);
+        if (t0 * t1 < 0.0 && std::abs(t0) > 0.15 && std::abs(t1) > 0.15) ++zig;
+    }
+    return {zig, static_cast<int>(n)};
+}
+
+}  // namespace
+
+CNX_TEST(the_angular_weight_reaches_the_energy_and_unfolds_the_staircase) {
+    // O peso `priorStrength` entra como multiplicador da energia angular e a mola (âncoras na escadinha) sozinha não alisa nada:
+    // com peso 0 o zigue-zague da escadinha fica, com o peso padrão 10 ele some. O gradiente é conferido contra diferenças
+    // finitas em energy_terms_test; aqui se confere o efeito de ponta a ponta, no otimizador e no fiscal.
+    const auto run = [](double weight) {
+        cnxtest::AaScene s = diskScene();
+        const std::vector<NodeId> ring = closedEdgeNodes(s.image);
+        const auto before = zigzag(s.image, ring);
+        SmoothParams p = allPhases(MeasurementType::Spring);
+        p.priorStrength = weight;
+        p.punctureCornerThresh = 0.0;
+        const cnx::SmoothResult r = ContourSmoother(p).run(s.image);
+        return std::tuple{before, zigzag(s.image, ring), r.phases[0].termsEnd.angular};
+    };
+    const auto [before0, after0, ang0] = run(0.0);
+    const auto [before10, after10, ang10] = run(10.0);
+    std::printf("  zigue-zague do anel: antes %d/%d; peso 0 -> %d; peso 10 -> %d (energia angular fase 1: %.3f -> %.3f)\n", before10.first,
+                before10.second, after0.first, after10.first, ang0, ang10);
+    CHECK(before10.first > before10.second / 2);          // a escadinha é quase só zigue-zague
+    CHECK(after0.first > before0.first * 9 / 10);          // sem peso nada a desdobra
+    CHECK(after10.first < before10.first / 10);           // com o peso padrão sobra menos de um décimo
+    CHECK(ang0 == 0.0);                                   // peso 0 zera o termo
+    CHECK(ang10 > 0.0);
+}
+
+CNX_TEST(hold_rounds_keep_the_cg_step_of_nodes_that_do_not_cross) {
+    // As barras do teste do fiscal: o alvo funde as duas barras e o modelo gerador empurra as bordas do vão uma contra a outra.
+    // Sem retenção o fiscal desfaz o passo inteiro e põe os nós em quarentena; com ela só os infratores ficam parados.
+    const cnxtest::AaScene solid = cnxtest::aaScene(24, 24, [](double x, double y) { return x >= 3 && x <= 21 && y >= 8 && y <= 14; }, 4);
+    const GenerativeModel model(solid.target);
+    const auto run = [&](int hold, VectorImage& out) {
+        cnxtest::AaScene s = cnxtest::aaScene(24, 24, [](double x, double y) {
+            return x >= 3 && x <= 21 && ((y >= 8 && y <= 10) || (y >= 12 && y <= 14));
+        }, 4);
+        const VectorImage before = s.image;
+        SmoothParams p = allPhases(MeasurementType::Generative);
+        p.maxCgIterations = 150;
+        p.maxNodeStepPx = 1.0;
+        p.airPressureWeight = 0.0;
+        p.holdRounds = hold;
+        const cnx::SmoothResult r = ContourSmoother(p, &model).run(s.image);
+        for (const cnx::PhaseStats& ph : r.phases) CHECK(ph.energyEnd <= ph.energyBegin + 1e-9);
+        checkInvariants(before, s.image, "retenção " + std::to_string(hold));
+        out = s.image;
+        return r;
+    };
+    VectorImage a;
+    VectorImage b;
+    const cnx::SmoothResult off = run(0, a);
+    const cnx::SmoothResult on = run(3, b);
+    int heldOff = 0, heldOn = 0, rejOff = 0, rejOn = 0;
+    for (std::size_t i = 0; i < off.phases.size(); ++i) {
+        heldOff += off.phases[i].held;
+        heldOn += on.phases[i].held;
+        rejOff += off.phases[i].crossingRejects;
+        rejOn += on.phases[i].crossingRejects;
+    }
+    std::printf("  barras: sem retenção rejeitou %d (retidas %d); com retenção rejeitou %d, retidas %d\n", rejOff, heldOff, rejOn, heldOn);
+    CHECK(heldOff == 0);  // desligada, o caminho é o de sempre
+    CHECK(rejOff > 0);
+    CHECK(heldOn > 0);    // ligada, passos parciais são aceitos
+    CHECK(rejOn < rejOff + heldOn);
+    for (std::size_t i = 0; i < on.phases.size(); ++i) {
+        std::printf("    fase %zu (retenção 3): it %d, retidas %d, rejeições %d, E %.6f -> %.6f\n", i, on.phases[i].iterations, on.phases[i].held,
+                    on.phases[i].crossingRejects, on.phases[i].energyBegin, on.phases[i].energyEnd);
+    }
+    // A trajetória da cena é determinística; estes números (medidos) fixam o comportamento interno da retenção: o passo parcial
+    // só vale com energia menor, os retidos ficam em quarentena e o CG recomeça ali. Mudar qualquer um desloca as contagens.
+    const std::array<int, 3> heldExpected{1, 2, 1};
+    const std::array<int, 3> rejectsExpected{1, 0, 0};
+    const std::array<int, 3> iterationsExpected{6, 6, 3};
+    for (std::size_t i = 0; i < 3; ++i) {
+        CHECK_CTX(on.phases[i].held == heldExpected[i], "retidas, fase " + std::to_string(i));
+        CHECK_CTX(on.phases[i].crossingRejects == rejectsExpected[i], "rejeições, fase " + std::to_string(i));
+        CHECK_CTX(on.phases[i].iterations == iterationsExpected[i], "iterações, fase " + std::to_string(i));
+    }
+    CHECK(std::abs(on.phases[0].energyEnd - 271.486267) < 1e-3);
+    CHECK(std::abs(on.phases[2].energyEnd - 250.946985) < 1e-3);
+}
+
+CNX_TEST(the_cg_restart_ratio_reaches_the_optimizer_and_the_new_parameters_are_fingerprinted_and_filed) {
+    // Razão ínfima = todo passo reinicia (descida pelo gradiente): depois de poucas iterações os nós estão em outro lugar.
+    const auto positionsWith = [](double ratio) {
+        cnxtest::AaScene s = diskScene();
+        SmoothParams p = allPhases(MeasurementType::Spring);
+        p.maxCgIterations = 12;
+        p.cgRestartRatio = ratio;
+        (void)ContourSmoother(p).run(s.image);
+        std::vector<Vec2> out;
+        for (NodeId n = 0; n < static_cast<NodeId>(s.image.nodeCount()); ++n) out.push_back(s.image.position(n));
+        return out;
+    };
+    const std::vector<Vec2> classic = positionsWith(0.2);
+    const std::vector<Vec2> always = positionsWith(1e-12);
+    double moved = 0.0;
+    for (std::size_t i = 0; i < classic.size(); ++i) moved = std::max(moved, sla::norm(classic[i] - always[i]));
+    std::printf("  razão 0,2 contra reinício sempre: maior diferença de posição %.4f px\n", moved);
+    CHECK(moved > 1e-3);
+
+    // Impressão digital: cada parâmetro invalida o cache a jusante.
+    const auto with = [](auto set) {
+        SmoothParams p;
+        set(p);
+        return p.fingerprint({});
+    };
+    CHECK(with([](SmoothParams& p) { p.holdRounds = 1; }) != with([](SmoothParams& p) { p.holdRounds = 2; }));
+    CHECK(with([](SmoothParams& p) { p.cgRestartRatio = 0.3; }) != with([](SmoothParams& p) { p.cgRestartRatio = 0.4; }));
+
+    // Arquivo .apf: leitura e rejeição de valores inválidos.
+    cnx::EngineParameters params;
+    std::istringstream apf("ContourSmoother::hold_rounds 5\nContourSmoother::cg_restart_ratio 0.75\n");
+    cnx::ParameterFiler::readAPF(apf, params);
+    CHECK(params.smooth.holdRounds == 5 && params.smooth.cgRestartRatio == 0.75);
+    for (const char* line : {"ContourSmoother::hold_rounds 17\n", "ContourSmoother::hold_rounds -1\n", "ContourSmoother::cg_restart_ratio 0\n",
+                             "ContourSmoother::cg_restart_ratio -0.5\n"}) {
+        cnx::EngineParameters bad;
+        std::istringstream in(line);
+        bool rejected = false;
+        try {
+            cnx::ParameterFiler::readAPF(in, bad);
+        } catch (const std::exception&) {
+            rejected = true;
+        }
+        CHECK_CTX(rejected, line);
+    }
+}
+
 // ================================================================ argumentos, cancelamento, determinismo
 
 CNX_TEST(argument_validation_and_cancellation) {
@@ -397,6 +549,18 @@ CNX_TEST(argument_validation_and_cancellation) {
     CHECK_THROWS(std::invalid_argument, ContourSmoother(bad, nullptr));
     bad = SmoothParams{};
     bad.maxNodeStepPx = 0.0;
+    CHECK_THROWS(std::invalid_argument, ContourSmoother(bad, nullptr));
+    // Padrões: a retenção e o reinício largo ficam desligados (medido em docs §1.33: não melhoram o erro de pixel).
+    CHECK(SmoothParams{}.holdRounds == 0);
+    CHECK(SmoothParams{}.cgRestartRatio == 0.2);
+    CHECK(cnx::CgOptions{}.restartRatio == 0.2);
+    for (const int rounds : {-1, 17}) {
+        bad = SmoothParams{};
+        bad.holdRounds = rounds;
+        CHECK_THROWS(std::invalid_argument, ContourSmoother(bad, nullptr));
+    }
+    bad = SmoothParams{};
+    bad.cgRestartRatio = 0.0;
     CHECK_THROWS(std::invalid_argument, ContourSmoother(bad, nullptr));
     // Contornos que já se cruzam na entrada.
     cnxtest::VectorScene crossed = cnxtest::vectorScene(14, 10, 3, 10, rng);

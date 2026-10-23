@@ -58,7 +58,7 @@ Fingerprint SmoothParams::fingerprint(Fingerprint upstream) const {
     f.add(punctureCornerThresh).add(punctureFlatnessThresh).add(punctureArmPx).add(punctureOnPhase);
     f.add(punctureMinContrast).add(contrastFullLevels).add(contrastFloor).add(jogMaxLedgePx);
     f.add(static_cast<int>(subPixelAnchors)).add(anchorReachPx).add(anchorMaxShiftPx).add(anchorMinContrast);
-    f.add(maxCgIterations).add(maxNodeStepPx).add(gradientTolerance).add(energyTolerance);
+    f.add(maxCgIterations).add(maxNodeStepPx).add(gradientTolerance).add(energyTolerance).add(holdRounds).add(cgRestartRatio);
     return f.add(upstream);
 }
 

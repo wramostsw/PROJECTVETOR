@@ -3,7 +3,7 @@
 //
 //   d₀ = −g₀;   x_{k+1} = x_k + α_k d_k;   β_{k+1} = max(0, g_{k+1}·(g_{k+1} − g_k) / ‖g_k‖²)
 //   d_{k+1} = −g_{k+1} + β_{k+1} d_k    (reinício em d = −g se d não for de descida ou se
-//                                          |g_{k+1}·g_k| ≥ 0,2‖g_{k+1}‖², critério de Powell)
+//                                          |g_{k+1}·g_k| ≥ restartRatio·‖g_{k+1}‖², Powell; restartRatio = 0,2)
 //   Wolfe forte:  f(x+αd) ≤ f(x) + c₁ α g·d   e   |g(x+αd)·d| ≤ c₂ |g·d|     (c₁ = 1e-4, c₂ = 0,1)
 //   Região de confiança: max_nó ‖α d_nó‖ ≤ maxStep (o fiscal anti-cruzamento precisa de passos curtos).
 //   No teto da região de confiança basta a condição de Armijo.
@@ -36,6 +36,10 @@ struct CgOptions {
     double maxStep = std::numeric_limits<double>::infinity();
     int stride = 2;
     int maxLineSearchEvals = 25;
+    /// Reinício de Powell: d = −g quando |g_k·g_{k+1}| ≥ restartRatio·‖g_{k+1}‖² (0,2 = o valor clássico). Em problemas mal
+    /// condicionados, como a escadinha de 25 mil nós do suavizador, 0,2 reinicia com tanta frequência que o CG vira descida
+    /// pelo gradiente; um valor maior mantém a direção conjugada por mais iterações (docs §1.33). Deve ser > 0.
+    double restartRatio = 0.2;
 };
 
 enum class CgStatus {

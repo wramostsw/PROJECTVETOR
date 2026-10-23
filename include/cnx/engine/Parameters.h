@@ -192,7 +192,13 @@ struct SmoothParams {
     double anchorReachPx = 2.5;
     double anchorMaxShiftPx = 1.0;
     double anchorMinContrast = 48.0;  ///< medido no degradê (docs §1.31): com 24 a classe de contraste suave piora 8 %, com 48 melhora 9 %
-    int punctureOnPhase = 0;             ///< índice 0-based: na 1ª fase, sobre a escadinha (depois dela os cantos já se arredondaram)
+    /// Quando o fiscal acha cruzamentos num passo do CG, só os nós infratores voltam à posição anterior (e vão para a
+    /// quarentena) e os demais ficam com o passo; até `holdRounds` rodadas, se a retenção cria novo cruzamento. Só se não
+    /// resolver o passo inteiro é descartado (docs §1.33). 0 desliga e restaura o descarte direto.
+    int holdRounds = 0;
+    /// Limiar do reinício de Powell do CG (`CgOptions::restartRatio`). Padrão clássico 0,2; 0,5 conserva a direção conjugada.
+    double cgRestartRatio = 0.2;
+    int punctureOnPhase = 0;           ///< índice 0-based: na 1ª fase, sobre a escadinha (depois dela os cantos já se arredondaram)
     int maxCgIterations = 200;            ///< por fase
     double maxNodeStepPx = 0.5;           ///< região de confiança da busca em linha (§2.3)
     double gradientTolerance = 1.0e-5;    ///< norma do infinito do gradiente nos nós livres

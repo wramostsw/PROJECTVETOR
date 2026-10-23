@@ -38,6 +38,7 @@ double cubicMinimizer(double a0, double f0, double d0, double a1, double f1, dou
 ConjugateGradient::ConjugateGradient(ObjectiveFunction& objective, CgOptions options)
     : objective_(&objective), options_(options) {
     if (options_.stride < 1) throw std::invalid_argument("ConjugateGradient: stride < 1");
+    if (!(options_.restartRatio > 0.0)) throw std::invalid_argument("ConjugateGradient: restartRatio <= 0");
     if (!(options_.c1 > 0.0 && options_.c1 < options_.c2 && options_.c2 < 1.0)) {
         throw std::invalid_argument("ConjugateGradient: requer 0 < c1 < c2 < 1");
     }
@@ -184,7 +185,7 @@ CgStatus ConjugateGradient::iterate() {
 
     // Próxima direção: PR+ com reinício de Powell.
     const double beta = gOldSq > 0.0 ? std::max(0.0, (gNewSq - gOldDotNew) / gOldSq) : 0.0;
-    const bool powellRestart = std::abs(gOldDotNew) >= 0.2 * gNewSq;
+    const bool powellRestart = std::abs(gOldDotNew) >= options_.restartRatio * gNewSq;
     if (powellRestart) {
         for (std::size_t i = 0; i < g_.size(); ++i) d_[i] = -g_[i];
         lastBeta_ = 0.0;

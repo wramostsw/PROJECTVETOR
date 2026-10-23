@@ -310,6 +310,8 @@ CNX_TEST(every_field_has_exactly_one_line_and_changing_it_changes_only_that_line
         {"ContourSmoother::max_node_step_px", [](auto& p) { p.smooth.maxNodeStepPx = 0.25; }},
         {"ContourSmoother::gradient_tolerance", [](auto& p) { p.smooth.gradientTolerance = 1e-4; }},
         {"ContourSmoother::energy_tolerance", [](auto& p) { p.smooth.energyTolerance = 1e-8; }},
+        {"ContourSmoother::hold_rounds", [](auto& p) { p.smooth.holdRounds = 5; }},
+        {"ContourSmoother::cg_restart_ratio", [](auto& p) { p.smooth.cgRestartRatio = 0.5; }},
         {"BezierFitter::stat_thresh_initial", [](auto& p) { p.fit.statThreshInitial = 1e-6; }},
         {"BezierFitter::stat_thresh_final", [](auto& p) { p.fit.statThreshFinal = 0.7; }},
         {"BezierFitter::max_rounds", [](auto& p) { p.fit.maxRounds = 7; }},
@@ -324,7 +326,7 @@ CNX_TEST(every_field_has_exactly_one_line_and_changing_it_changes_only_that_line
     for (const std::string& l : baseLines) {
         if (!l.empty() && l[0] != '#') entries.push_back(l);
     }
-    // 64 campos no total; ContourSmoother::prior_type só tem o valor 3 válido e é conferido à parte.
+    // 66 campos no total; ContourSmoother::prior_type só tem o valor 3 válido e é conferido à parte.
     CHECK(entries.size() == muts.size() + 1);
     CHECK(std::count(entries.begin(), entries.end(), std::string("ContourSmoother::prior_type 3")) == 1);
 
