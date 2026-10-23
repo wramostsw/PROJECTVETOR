@@ -29,6 +29,7 @@ struct PhaseStats {
     int evaluations = 0;      ///< avaliações de energia (inclui a busca em linha)
     int crossingRejects = 0;  ///< iterações desfeitas pelo fiscal
     int puncturedNodes = 0;   ///< cantos perfurados nesta fase
+    int jogNodes = 0;         ///< candidatos a canto descartados por formarem um degrau de bloco (par de giros opostos, § 1.32)
     int freeNodes = 0;        ///< nós livres no início da fase
     double energyBegin = 0.0;
     double energyEnd = 0.0;
@@ -52,8 +53,9 @@ public:
     SmoothResult run(VectorImage& image, TaskContext ctx = {}) const;
 
     /// Perfura os cantos: marca com NodeFlag::Corner os nós de arestas que isProbablyPuncturedNode
-    /// aceita. Retorna quantos foram marcados agora. Exposta para testes.
-    static int puncture(VectorImage& image, const SmoothTopology& topology, const SmoothParams& params);
+    /// aceita, menos os pares que formam um degrau de bloco (`SmoothParams::jogMaxLedgePx`). Retorna quantos foram marcados
+    /// agora; `jogNodes`, se dado, recebe quantos candidatos o filtro de degraus descartou. Exposta para testes.
+    static int puncture(VectorImage& image, const SmoothTopology& topology, const SmoothParams& params, int* jogNodes = nullptr);
 
 private:
     SmoothParams params_;

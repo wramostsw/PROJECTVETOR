@@ -266,6 +266,7 @@ std::vector<Field> buildFields() {
     f.push_back(doubleField("ContourSmoother::puncture_flatness_thresh", [](auto& p) -> auto& { return p.smooth.punctureFlatnessThresh; }));
     f.push_back(doubleField("ContourSmoother::puncture_arm_px", [](auto& p) -> auto& { return p.smooth.punctureArmPx; }));
     f.push_back(doubleField("ContourSmoother::puncture_min_contrast", [](auto& p) -> auto& { return p.smooth.punctureMinContrast; }));
+    f.push_back(doubleField("ContourSmoother::jog_max_ledge_px", [](auto& p) -> auto& { return p.smooth.jogMaxLedgePx; }));
     f.push_back(doubleField("ContourSmoother::contrast_full_levels", [](auto& p) -> auto& { return p.smooth.contrastFullLevels; }));
     f.push_back(doubleField("ContourSmoother::contrast_floor", [](auto& p) -> auto& { return p.smooth.contrastFloor; }));
     f.push_back(boolField("ContourSmoother::sub_pixel_anchors", [](auto& p) -> auto& { return p.smooth.subPixelAnchors; }));
@@ -375,6 +376,7 @@ const std::vector<Rule>& rules() {
         add({"ContourSmoother::puncture_flatness_thresh"}, "ContourSmoother::puncture_flatness_thresh deve ser finito e >= 0", [](const EngineParameters& p) { return atLeast(p.smooth.punctureFlatnessThresh, 0.0); });
         add({"ContourSmoother::puncture_arm_px"}, "ContourSmoother::puncture_arm_px deve ser finito e > 0", [](const EngineParameters& p) { return above(p.smooth.punctureArmPx, 0.0); });
         add({"ContourSmoother::puncture_min_contrast"}, "ContourSmoother::puncture_min_contrast deve ser finito e >= 0", [](const EngineParameters& p) { return atLeast(p.smooth.punctureMinContrast, 0.0); });
+        add({"ContourSmoother::jog_max_ledge_px"}, "ContourSmoother::jog_max_ledge_px deve ser finito e >= 0", [](const EngineParameters& p) { return atLeast(p.smooth.jogMaxLedgePx, 0.0); });
         add({"ContourSmoother::contrast_full_levels"}, "ContourSmoother::contrast_full_levels deve ser finito e >= 0", [](const EngineParameters& p) { return atLeast(p.smooth.contrastFullLevels, 0.0); });
         add({"ContourSmoother::contrast_floor"}, "ContourSmoother::contrast_floor deve estar em (0, 1]", [](const EngineParameters& p) { return above(p.smooth.contrastFloor, 0.0) && p.smooth.contrastFloor <= 1.0; });
         add({"ContourSmoother::anchor_reach_px"}, "ContourSmoother::anchor_reach_px deve ser finito e >= 0,5", [](const EngineParameters& p) { return atLeast(p.smooth.anchorReachPx, 0.5); });

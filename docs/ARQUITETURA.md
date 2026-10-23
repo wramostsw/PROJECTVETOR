@@ -1444,6 +1444,40 @@ No logo em degradê (Copilot): 685 para 92 faces, erro 3,9 para 4,3, `SmoothCont
 - Fronteiras entre faixas de degradê de contraste baixo continuam na escadinha (sem medida confiável).
 - `anchorMinContrast` = 48 e `anchorReachPx` = 2,5 vêm de duas imagens e de cenas sintéticas.
 
+### 1.32 Degrau de bloco do JPEG: dois cantos que se anulam não são cantos
+
+**O problema, com o que se mediu.** No zoom da haste do "r" do Acrolimp havia um degrau de ~2 px na borda reta, na linha 319 da imagem, e no canto do "A" um dente de 1 px. Dumpando os nós (`bench/nodes.cpp`) a causa não era a medição nem o suavizador: no JPEG o bloco 8×8 desloca a borda reta cerca de 2 px na fronteira do bloco (linha 320), e a faixa fina de halo ciano que corria ao lado dela termina ali. O resultado no grafo é uma **junção** (ciano, branco, azul) com um canto de cada lado dela: (338; 319) → junção (337; 319) → (336; 319), uma saliência horizontal de 2 px. O canto perfurado (§1.29) trata cada um como canto vivo (giro ≥ 0,8 rad, braços retos): sem prior de suavidade ali, e o ajuste de Bézier quebra a curva nos dois, então a saliência sobrevive ao suavizador e ao SVG. Uma primeira versão que só olhava pares de cantos *na mesma aresta* não mudou nada (confirmou-se pelo dump: os dois cantos estão em arestas diferentes, separados pela junção).
+
+**O que foi feito** (`ContourSmoother::puncture`, `SmoothParams::jogMaxLedgePx` = 2,5 px, 0 desliga). Dois candidatos a canto que (a) estão a no máximo `jogMaxLedgePx` um do outro (busca em grade, entre arestas), (b) são fronteira de uma mesma face e (c) têm **convexidades opostas** em relação a ela (um entra e o outro sai: giro × sentido de `left`/`right`) formam um degrau de bloco: nenhum dos dois é perfurado. Um canto de verdade vira e continua virado; o fim de um traço tem os dois cantos do mesmo sentido; um canto sem parceiro por perto fica. Sem canto, o prior angular alisa o degrau e o ajuste de Bézier deixa de quebrar ali.
+
+**Medidas.** (`bench/jogs.cpp`: cantos candidatos descartados; `errmap`: erro por classe; zooms em `smoke/hasteD.png`, `denteA.png`, `copjog.png`, `acrojog.png`.)
+
+| imagem | cantos candidatos | descartados como degrau |
+|---|---|---|
+| Acrolimp | 1700 | 298 (17,5%) |
+| Copilot | 99 | 6 (3 pares) |
+
+| limite (px) | Acrolimp: médio / borda forte | Copilot: suave / médio / borda forte |
+|---|---|---|
+| 0 (desligado) | 44,03 / 57,70 | 7,27 / 16,59 / 33,43 |
+| 1,5 | 43,96 / 57,72 | 7,76 / 16,82 / 33,39 |
+| **2,5 (padrão)** | **43,88 / 57,05** | 7,77 / 16,86 / 33,29 |
+| 3,5 | 44,03 / 57,27 | 7,36 / 16,90 / 34,12 |
+| 5 | 43,76 / 56,94 | 7,77 / 16,90 / 33,72 |
+
+No olho, nos pontos onde o filtro age (a haste do "r", o canto do "A", três pontos do Copilot e nove do Acrolimp, escolhidos de 9 em 9 pares): o degrau e o dente somem e a borda segue reta; nos outros, rebarbas pequenas ficam mais lisas. Não vi um canto de verdade perdido nas amostras. Num teste sintético (haste com degrau de 2 px e faixa de halo) o maior giro perto do degrau cai de **1,57 rad** (dois cantos de 90° preservados) para **0,07 rad**.
+
+**O erro de pixel quase não se mexe, por desenho e por ruído.** No Acrolimp a borda forte melhora 1,1% (57,70 → 57,05). No Copilot a classe suave **piora 7%** (7,27 → 7,77) e a borda forte melhora 0,4%: o filtro deixa de seguir os pixels deslocados pelo bloco (o deslocamento *está* nos pixels, então o erro local sobe por construção: a diferença de erro com mais peso está no bloco ao lado do terceiro ponto), e o otimizador responde em 309 blocos de 24 px com somas pequenas nos dois sentidos, que não consegui atribuir a uma causa só. O número não decide aqui; a comparação no olho com a referência é o critério, como no §1.30.
+
+**Testes** (`block_jog_test`, 7; a suíte inteira tem 31): degrau de 2 px com faixa de halo atravessando uma junção (sem o filtro dois cantos, com ele nenhum, e a premissa da cena checada: a junção está entre os dois); o limite decide (3 e 4 px sem faixa: cantos com o padrão, degraus com 3,5 e 4,5; 3 px com limite 3,0 é degrau e com 2,99 não); a cena espelhada (as faces trocam de lado em cada aresta); dois cantos do mesmo sentido a 3 px (fim de um traço de 3 px) ficam; um canto sem parceiro (o fim da haste, 20 linhas adiante) fica; depois do suavizador o maior giro cai de 1,57 para 0,07 rad; `PhaseStats::jogNodes`; parâmetro validado, na impressão digital e no `.apf`.
+
+**Mutação:** 16 defeitos injetados (`mutation_jogs.ps1`: grade de busca, distância, face comum, convexidade, perfuração dos descartados, contagens, padrão, impressão digital, validação), **14 detectados e 2 não**. J6 (o giro sem olhar de que lado da aresta está a face comum) e J9 (o exterior contando como face comum) sobreviveram: nas 48 variações de cena do teste de orientações (8 simetrias do quadrado, 2 posições da borda, 3 linhas do degrau) o rastreador sempre percorre as duas arestas de uma face no mesmo sentido em relação a ela, então o fator ±1 do lado vale sempre o mesmo para os dois cantos, e uma aresta do exterior nunca tem um canto candidato (os nós dela são da moldura). Os dois são tratados como guardas que a teoria exige e que esta entrada não exercita, não como cobertos.
+
+**O que continua aberto:**
+- Um degrau de 2 px **sem** faixa de halo ao lado nem vira par de cantos (o filtro de arco o apaga): só aparece como saliência quando a faixa fina o transforma em junção. Se um JPEG forte deslocar a borda 3 px, o limite padrão (2,5) deixa os cantos.
+- O canto arredondado de raio ~4 px do "A" sai como um chanfro de dois cantos de 45°, não como um arco.
+- O limite de 2,5 px é de duas imagens: precisa de mais logos.
+
 ---
 
 ## 2. Formulação matemática

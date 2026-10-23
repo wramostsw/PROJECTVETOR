@@ -173,6 +173,10 @@ struct SmoothParams {
     /// é canto perfurado: entre faixas parecidas de um degradê os degraus de 8 px do JPEG parecem cantos vivos e seriam
     /// preservados (docs §1.29). 0 desliga. Os cantos de um logo (letra contra fundo) têm contraste de dezenas de níveis ou mais.
     double punctureMinContrast = 24.0;
+    /// Dois cantos seguidos na mesma aresta, de giros opostos e a no máximo este comprimento de arco um do outro, são um
+    /// degrau de bloco 8×8 do JPEG (a borda sai e logo volta) e não cantos do desenho: nenhum é perfurado (docs §1.32).
+    /// 0 desliga.
+    double jogMaxLedgePx = 2.5;
     /// Peso da mola de fidelidade pelo contraste da fronteira: escala ∝ contraste² (a informação de posição de uma
     /// fronteira cresce com o quadrado do contraste), do piso `contrastFloor` até 1 em `contrastFullLevels` níveis de cor.
     /// 0 desliga, e é o padrão: no logo em degradê medido (docs §1.29) enfraquecer a mola não tirou a escada (quem a

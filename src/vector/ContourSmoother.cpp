@@ -3,6 +3,8 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
+#include <map>
 #include <stdexcept>
 #include <utility>
 #include <vector>
@@ -73,12 +75,22 @@ ContourSmoother::ContourSmoother(SmoothParams params, const GenerativeModel* mod
     if (params_.quarantineRounds < 0) throw std::invalid_argument("ContourSmoother: quarantineRounds < 0");
     if (!(params_.punctureMinContrast >= 0.0)) throw std::invalid_argument("ContourSmoother: punctureMinContrast negativo ou NaN");
     if (!(params_.contrastFullLevels >= 0.0)) throw std::invalid_argument("ContourSmoother: contrastFullLevels negativo ou NaN");
+    if (!(params_.jogMaxLedgePx >= 0.0)) throw std::invalid_argument("ContourSmoother: jogMaxLedgePx negativo ou NaN");
     if (!(params_.contrastFloor > 0.0 && params_.contrastFloor <= 1.0)) throw std::invalid_argument("ContourSmoother: contrastFloor fora de (0, 1]");
     (void)phaseWeights(params_, 0);  // valida priorType
 }
 
-int ContourSmoother::puncture(VectorImage& image, const SmoothTopology& topology, const SmoothParams& params) {
-    std::vector<NodeId> marked;
+int ContourSmoother::puncture(VectorImage& image, const SmoothTopology& topology, const SmoothParams& params, int* jogNodes) {
+    // Cada canto candidato, com o giro (com sinal, no sentido da aresta, `left` do lado positivo) e as faces da aresta,
+    // para separar os cantos de verdade dos degraus de bloco do JPEG (abaixo).
+    struct Mark {
+        NodeId node;
+        Vec2 pos;
+        FaceId left;
+        FaceId right;
+        double turn;
+    };
+    std::vector<Mark> marked;
     // Duas escalas de braço: o braço inteiro e a metade. Um fio de 2,4 px ou a ponta cega de um triângulo têm lados
     // mais curtos que o braço; o braço passaria do canto seguinte e reprovaria o teste de retidão.
     const std::array<double, 2> arms{params.punctureArmPx, params.punctureArmPx * 0.5};
@@ -102,14 +114,65 @@ int ContourSmoother::puncture(VectorImage& image, const SmoothTopology& topology
         if (topology.nodeContrast[static_cast<std::size_t>(t.mid)] < params.punctureMinContrast) continue;
         for (std::size_t k = 0; k < arms.size(); ++k) {
             if (isProbablyPuncturedNode(pts[k], t.index, closed, arms[k], params.punctureCornerThresh, params.punctureFlatnessThresh)) {
-                marked.push_back(t.mid);
+                const Edge& edge = image.edge(t.edge);
+                marked.push_back({t.mid, image.position(t.mid), edge.left, edge.right, measureCorner(pts[k], t.index, closed, arms[k]).turn});
                 break;
             }
         }
     }
+    // Degrau de bloco do JPEG (docs §1.32): dois cantos a no máximo `jogMaxLedgePx` um do outro, na fronteira de uma mesma
+    // face, de convexidades opostas (um entra e o outro sai), formam uma saliência de 1 a 2 px numa borda que segue reta
+    // dos dois lados. Um canto de verdade vira e continua virado; a saliência é o deslocamento de um bloco 8×8 da imagem
+    // comprimida, e o Vector Magic a alisa. Perfurar os dois a preservaria, e ainda quebraria o ajuste de Bézier ali. A
+    // busca vale entre arestas (a saliência atravessa uma junção quando uma faixa fina termina nela).
+    std::vector<char> jog(marked.size(), 0);
+    int jogs = 0;
+    if (params.jogMaxLedgePx > 0.0 && marked.size() > 1) {
+        const double cell = params.jogMaxLedgePx;
+        using Cell = std::pair<long, long>;
+        std::map<Cell, std::vector<std::size_t>> grid;
+        const auto cellOf = [&](Vec2 p) { return Cell{static_cast<long>(std::floor(p.x / cell)), static_cast<long>(std::floor(p.y / cell))}; };
+        for (std::size_t i = 0; i < marked.size(); ++i) grid[cellOf(marked[i].pos)].push_back(i);
+        // Convexidade do canto em relação à face f: o giro vale com sinal contrário se f está do outro lado da aresta.
+        const auto convexity = [](const Mark& m, FaceId f) { return m.turn * (m.left == f ? 1.0 : -1.0); };
+        const auto shares = [](const Mark& a, const Mark& b, FaceId& common) {
+            for (const FaceId f : {a.left, a.right}) {
+                if (f == kExteriorFace) continue;
+                if (f == b.left || f == b.right) {
+                    common = f;
+                    return true;
+                }
+            }
+            return false;
+        };
+        for (std::size_t i = 0; i < marked.size(); ++i) {
+            if (jog[i]) continue;
+            const Cell c = cellOf(marked[i].pos);
+            bool found = false;
+            for (long dy = -1; dy <= 1 && !found; ++dy) {
+                for (long dx = -1; dx <= 1 && !found; ++dx) {
+                    const auto it = grid.find({c.first + dx, c.second + dy});
+                    if (it == grid.end()) continue;
+                    for (const std::size_t j : it->second) {
+                        FaceId common = kExteriorFace;
+                        if (j <= i || jog[j] || sla::norm(marked[i].pos - marked[j].pos) > params.jogMaxLedgePx) continue;
+                        if (!shares(marked[i], marked[j], common)) continue;
+                        if (convexity(marked[i], common) * convexity(marked[j], common) >= 0.0) continue;
+                        jog[i] = jog[j] = 1;
+                        jogs += 2;
+                        found = true;
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    if (jogNodes != nullptr) *jogNodes = jogs;
     // Decide com as posições da fase anterior e só então marca (a ordem não influencia).
     int count = 0;
-    for (const NodeId n : marked) {
+    for (std::size_t i = 0; i < marked.size(); ++i) {
+        const NodeId n = marked[i].node;
+        if (jog[i]) continue;
         if ((image.flags(n) & NodeFlag::Corner) == 0) {
             image.setFlags(n, static_cast<std::uint8_t>(image.flags(n) | NodeFlag::Corner));
             ++count;
@@ -117,7 +180,6 @@ int ContourSmoother::puncture(VectorImage& image, const SmoothTopology& topology
     }
     return count;
 }
-
 SmoothResult ContourSmoother::run(VectorImage& image, TaskContext ctx) const {
     if (!CrossingGuard::find(image).empty()) {
         throw std::invalid_argument("ContourSmoother::run: os contornos já se cruzam na entrada");
@@ -136,7 +198,7 @@ SmoothResult ContourSmoother::run(VectorImage& image, TaskContext ctx) const {
         }
         const SmoothTopology topology = SmoothTopology::build(image, params_.airPressureMaxNodes,
                                                               {params_.contrastFullLevels, params_.contrastFloor});
-        if (phase == params_.punctureOnPhase) st.puncturedNodes = puncture(image, topology, params_);
+        if (phase == params_.punctureOnPhase) st.puncturedNodes = puncture(image, topology, params_, &st.jogNodes);
 
         PhaseObjective objective(image, topology, model_, weights, params_.borderHardConstraint);
         CgOptions options;
