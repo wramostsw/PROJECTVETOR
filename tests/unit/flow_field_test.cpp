@@ -365,9 +365,10 @@ CNX_TEST(strokes_are_not_invented_where_the_field_or_the_colors_say_no) {
     const int tight = links(draw(24, 24, diag), strict);
     std::printf("  coerência ≥ 0,95: %d ligações\n", tight);
     CHECK(tight > 0 && tight < 19);
-    // Pontes quase da cor do traço (cinza 20, a 0,018 do preto): o traço já tem 2 px, não há o que ligar.
+    // Pontes quase da cor do traço (cinza 5, a 0,034 do preto, dentro do teto de fusão de 12 níveis): o traço já
+    // tem 2 px, não há o que ligar. (Era cinza 20 enquanto o teto era 40 níveis.)
     Array2D<Rgba8> thick = draw(24, 24, diag);
-    for (int i = 2; i < 21; ++i) thick(i + 1, i) = rgb(20, 20, 20);
+    for (int i = 2; i < 21; ++i) thick(i + 1, i) = rgb(5, 5, 5);
     CHECK(links(thick) == 0);
     // Xadrez: o campo é nulo — nenhum par diagonal vira traço.
     Array2D<Rgba8> chess(16, 16);
@@ -437,7 +438,7 @@ CNX_TEST(the_bridge_with_more_ink_is_preferred) {
     Pixels line;
     for (int i = 3; i <= 28; ++i) line.push_back({i, i});
     Array2D<Rgba8> img = draw(32, 32, line);
-    for (int i = 3; i < 28; ++i) img(i, i + 1) = rgb(235, 235, 235);
+    for (int i = 3; i < 28; ++i) img(i, i + 1) = rgb(250, 250, 250);  // dentro do teto de fusão (12 níveis) do branco
     const cnx::SegmentationResult r = segment(img);
     CHECK(r.stats.finalRegions == 2 && r.stats.strokeLinks == 25 && oneRegion(r.map, line));
     const RegionId stroke = r.map.compactLabels()(3, 3);

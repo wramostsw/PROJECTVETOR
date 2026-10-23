@@ -32,8 +32,9 @@ void validateStrokeParams(const SegmentParams& p) {
 
 // ---------------------------------------------------------------- paleta
 
-void snapColorsToPalette(PixelMap& map, const Palette& palette) {
+void snapColorsToPalette(PixelMap& map, const Palette& palette, double maxDistance2) {
     if (palette.colors.empty()) throw std::invalid_argument("snapColorsToPalette: paleta vazia");
+    if (!(maxDistance2 >= 0.0)) throw std::invalid_argument("snapColorsToPalette: distância máxima negativa ou NaN");
     RegionForest& forest = map.forest();
     for (std::size_t i = 0; i < forest.capacity(); ++i) {
         const auto r = static_cast<RegionId>(i);
@@ -49,6 +50,10 @@ void snapColorsToPalette(PixelMap& map, const Palette& palette) {
                 bestD = d;
                 best = k;
             }
+        }
+        if (bestD > maxDistance2) {  // sem tinta por perto (faixa de degradê): fica com a cor que já tem
+            s.paletteIndex = -1;
+            continue;
         }
         s.paletteIndex = static_cast<std::int32_t>(best);
         s.color = palette.colors[best];
@@ -559,7 +564,7 @@ PixelMap PixelSegmenter::finish(const Palette* palette) {
         if (palette->exact) {
             snapColorsToExactPalette(map_, image_, *palette);
         } else {
-            snapColorsToPalette(map_, *palette);
+            snapColorsToPalette(map_, *palette, params_.paletteSnapMax);
         }
     }
     stats_.finalRegions = static_cast<int>(map_.compact());

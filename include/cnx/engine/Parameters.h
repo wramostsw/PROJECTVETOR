@@ -93,7 +93,16 @@ struct SegmentParams {
     double quadTreeVariance = 1.0e-3;  ///< — a calibrar
     double mergeThreshStart = 1.0e-4;  ///< limiar inicial de "juntar" (distância² RGBA) — a calibrar
     double mergeThreshGrowth = 1.5;    ///< fator multiplicativo por rodada — a calibrar
-    double mergeThreshMax = 2.5e-2;    ///< teto — a calibrar
+    /// Teto de "juntar": duas vizinhas só se fundem se as cores medianas estão a dist² ≤ teto. Em degradês o teto é o
+    /// passo da faixa (docs §1.28): com ele em 40 níveis de cor (2,5e-2) um logo em degradê virava 7 faixas por fita;
+    /// 12 níveis (padrão) dão dezenas de faixas finas. applyProfile o multiplica por perfil (alto/médio/baixo detalhe).
+    double mergeThreshMax = 12.0 * 12.0 / (255.0 * 255.0);
+    /// Encaixe na paleta (snapColorsToPalette): uma região só toma a cor da paleta mais próxima se a sua cor está a
+    /// dist² ≤ este valor; senão mantém a própria cor mediana. Uma região chapada com ruído fica a poucos níveis da sua
+    /// tinta e é encaixada (cor exata); uma faixa de degradê não tem tinta por perto e fica como está. 4,0 (o máximo
+    /// possível em RGBA) = sempre encaixa. applyProfile o põe em 1/9 do teto de fusão (um terço em distância: 4 níveis
+    /// no perfil médio) nos perfis de foto; os de logo mantêm 4,0.
+    double paletteSnapMax = 4.0;
     int minRegionPixels = 4;           ///< enforceMinNumPixels — a calibrar
     /// Orçamento da simulação "e se" de uma fusão: o erro quadrático da união pode superar a soma
     /// dos erros das partes em no máximo `whatIfFactor · limiar · min(nₐ, n_b)`. Para regiões

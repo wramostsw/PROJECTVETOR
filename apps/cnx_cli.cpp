@@ -6,6 +6,7 @@
 //
 // Só costura peças que já existem (ImageFileLoader, CoreEngine, ExportOutputStage). Não tem lógica de vetorização própria.
 #include <chrono>
+#include <algorithm>
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
@@ -39,7 +40,16 @@ int main(int argc, char** argv) {
     std::vector<std::string> files;
     for (int i = 1; i < argc; ++i) {
         const std::string arg = argv[i];
-        if ((arg == "--perfil" || arg == "--cores") && i + 1 < argc) {
+        if (arg == "--limiar" && i + 1 < argc) {
+            // Teto da fusão de regiões, em níveis de cor (0-255): dist² = (níveis/255)².
+            const double levels = std::atof(argv[++i]);
+            if (levels <= 0.0) {
+                std::fprintf(stderr, "--limiar precisa ser > 0\n");
+                return 2;
+            }
+            params.segment.mergeThreshMax = (levels / 255.0) * (levels / 255.0);
+            params.segment.mergeThreshStart = std::min(params.segment.mergeThreshStart, params.segment.mergeThreshMax);
+        } else if ((arg == "--perfil" || arg == "--cores") && i + 1 < argc) {
             const int value = std::atoi(argv[++i]);
             if (arg == "--perfil") {
                 if (value < 0 || value > 8) {

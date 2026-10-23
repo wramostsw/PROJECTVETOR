@@ -73,6 +73,7 @@ CNX_TEST(every_field_of_every_stage_parameter_set_enters_its_fingerprint) {
         {"mergeThreshStart", [](auto& p) { p.mergeThreshStart *= 2; }},
         {"mergeThreshGrowth", [](auto& p) { p.mergeThreshGrowth = 2.0; }},
         {"mergeThreshMax", [](auto& p) { p.mergeThreshMax *= 2; }},
+        {"paletteSnapMax", [](auto& p) { p.paletteSnapMax = 0.01; }},
         {"minRegionPixels", [](auto& p) { p.minRegionPixels = 9; }},
         {"whatIfFactor", [](auto& p) { p.whatIfFactor = 2.0; }},
         {"finalSweepCap", [](auto& p) { p.finalSweepCap = 3; }},

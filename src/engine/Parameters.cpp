@@ -41,7 +41,7 @@ Fingerprint PaletteParams::fingerprint(Fingerprint upstream) const {
 Fingerprint SegmentParams::fingerprint(Fingerprint upstream) const {
     Fingerprint f;
     f.add(std::string_view("segment")).add(quadTreeBlock).add(quadTreeVariance).add(mergeThreshStart).add(mergeThreshGrowth).add(mergeThreshMax);
-    f.add(minRegionPixels).add(whatIfFactor).add(finalSweepCap);
+    f.add(paletteSnapMax).add(minRegionPixels).add(whatIfFactor).add(finalSweepCap);
     f.add(static_cast<int>(linkStrokes)).add(flowSigmaPx).add(strokeMinCoherence).add(strokeMaxAngle);
     f.add(microRegionMaxPixels).add(beachLineTolerance).add(beachMinContrast).add(beachNeighborShare);
     f.add(shadowVariance).add(shadowSmoothRatio).add(shadowMinPixels).add(shadowBlurRadius);
@@ -93,6 +93,29 @@ void EngineParameters::applyProfile(ImageProfile profile) {
         case ImageProfile::Custom: break;
     }
     fit.statThreshFinal = std::max(fit.statThreshFinal, fit.statThreshInitial);
+
+    // Passo das faixas de degradê (§1.28): o teto de fusão é o do usuário (12 níveis de cor por padrão) vezes o fator
+    // do detalhe do perfil, (8/12)² para alto e (24/12)² para baixo. Multiplicar (e não atribuir) preserva o controle
+    // Sensitivity, que escala o mesmo campo. O início nunca passa do teto.
+    double detail = 1.0;
+    bool snapOnlyNearInks = false;  // fotos e degradês: a paleta não explica a imagem; só encaixa quem está perto de uma tinta
+    switch (profile) {
+        case ImageProfile::PhotoHigh: detail = (8.0 / 12.0) * (8.0 / 12.0); snapOnlyNearInks = true; break;
+        case ImageProfile::PhotoMed: snapOnlyNearInks = true; break;
+        case ImageProfile::PhotoLow: detail = (24.0 / 12.0) * (24.0 / 12.0); snapOnlyNearInks = true; break;
+        case ImageProfile::LogoHighAA:
+        case ImageProfile::LogoHigh: detail = (8.0 / 12.0) * (8.0 / 12.0); break;
+        case ImageProfile::LogoLowAA:
+        case ImageProfile::LogoLow: detail = (24.0 / 12.0) * (24.0 / 12.0); break;
+        case ImageProfile::LogoMedAA:
+        case ImageProfile::LogoMed:
+        case ImageProfile::Custom: break;
+    }
+    segment.mergeThreshMax *= detail;
+    segment.mergeThreshStart = std::min(segment.mergeThreshStart, segment.mergeThreshMax);
+    // A tolerância do encaixe é a do ruído, um terço do passo da faixa (4 níveis no perfil médio): mais do que isso
+    // puxaria a faixa de um degradê até a tinta, que é só o centro de um grupo do k-means, e pioraria o erro.
+    if (snapOnlyNearInks) segment.paletteSnapMax = segment.mergeThreshMax / 9.0;
 }
 
 void applyUserControl(EngineParameters& params, UserControl control, int value) {

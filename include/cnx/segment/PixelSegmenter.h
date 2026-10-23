@@ -47,9 +47,11 @@ struct SegmentationResult {
 };
 
 /// Atribui a cada raiz com pixels a cor da paleta mais próxima de sua média (uma rodada de
-/// k-means, só o passo de atribuição, §4). Empate → menor índice. Lança std::invalid_argument se
-/// a paleta for vazia. Pode ser chamada antes ou depois de compact().
-void snapColorsToPalette(PixelMap& map, const Palette& palette);
+/// k-means, só o passo de atribuição, §4). Empate → menor índice. Se a distância² da média a essa cor passa de
+/// `maxDistance2`, a raiz não é encaixada: mantém a cor que tinha e paletteIndex = -1 (faixas de degradê, §1.28; o
+/// padrão 4,0 é o máximo possível em RGBA, ou seja, sempre encaixa). Lança std::invalid_argument se a paleta for
+/// vazia ou se `maxDistance2` for negativo ou NaN. Pode ser chamada antes ou depois de compact().
+void snapColorsToPalette(PixelMap& map, const Palette& palette, double maxDistance2 = 4.0);
 
 /// Modo paleta exata (docs §1.21): cada raiz recebe a cor da paleta que a maioria dos seus pixels tem (cada
 /// pixel vota na cor da paleta mais próxima da sua, a mesma regra que montou o mapa inicial). A média não
